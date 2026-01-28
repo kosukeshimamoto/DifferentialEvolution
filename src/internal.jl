@@ -1,0 +1,759 @@
+const _ALGORITHMS = (:de, :shade, :lshade, :jso)
+
+function _validate_inputs(lower, upper, popsize, maxiters, maxevals, F, CR, algorithm, memory_size, pmax)
+    if isempty(lower) || isempty(upper)
+        throw(ArgumentError("lower and upper must be non-empty"))
+    end
+    if length(lower) != length(upper)
+        throw(ArgumentError("lower and upper must have the same length"))
+    end
+    for i in eachindex(lower, upper)
+        if !isfinite(lower[i]) || !isfinite(upper[i])
+            throw(ArgumentError("bounds must be finite"))
+        end
+        if !(lower[i] < upper[i])
+            throw(ArgumentError("lower must be strictly less than upper for each dimension"))
+        end
+    end
+    if popsize < 4
+        throw(ArgumentError("popsize must be >= 4"))
+    end
+    if maxiters <= 0
+        throw(ArgumentError("maxiters must be positive"))
+    end
+    if maxevals < popsize
+        throw(ArgumentError("maxevals must be >= popsize"))
+    end
+    if algorithm ∉ _ALGORITHMS
+        throw(ArgumentError("algorithm must be one of :de, :shade, :lshade, or :jso"))
+    end
+    if algorithm == :de
+        if !(F > 0 && F <= 2)
+            throw(ArgumentError("F must be in (0, 2]"))
+        end
+        if !(CR >= 0 && CR <= 1)
+            throw(ArgumentError("CR must be in [0, 1]"))
+        end
+    else
+        if !(F > 0 && F <= 2)
+            throw(ArgumentError("F must be in (0, 2]"))
+        end
+        if !(CR >= 0 && CR <= 1)
+            throw(ArgumentError("CR must be in [0, 1]"))
+        end
+        if !isnothing(memory_size) && memory_size <= 0
+            throw(ArgumentError("memory_size must be positive"))
+        end
+        if !(pmax > 0 && pmax <= 1)
+            throw(ArgumentError("pmax must be in (0, 1]"))
+        end
+    end
+    return nothing
+end
+
+function _rand1distinct(rng, n, exclude)
+    r = rand(rng, 1:n)
+    while r == exclude
+        r = rand(rng, 1:n)
+    end
+    return r
+end
+
+function _rand3distinct(rng, n, exclude)
+    r1 = rand(rng, 1:n)
+    while r1 == exclude
+        r1 = rand(rng, 1:n)
+    end
+    r2 = rand(rng, 1:n)
+    while r2 == exclude || r2 == r1
+        r2 = rand(rng, 1:n)
+    end
+    r3 = rand(rng, 1:n)
+    while r3 == exclude || r3 == r1 || r3 == r2
+        r3 = rand(rng, 1:n)
+    end
+    return r1, r2, r3
+end
+
+function _rand_cauchy(rng, mean, scale)
+    u = rand(rng)
+    return mean + scale * tan(pi * (u - 0.5))
+end
+
+function _weighted_arith_mean(values, weights)
+    total = sum(weights)
+    return sum(values .* weights) / total
+end
+
+function _weighted_lehmer_mean(values, weights)
+    num = sum(weights .* (values .^ 2))
+    den = sum(weights .* values)
+    return num / den
+end
+
+function _archive_push!(archive, limit, vec, rng)
+    if limit <= 0
+        return nothing
+    end
+    push!(archive, copy(vec))
+    if length(archive) > limit
+        idx = rand(rng, 1:length(archive))
+        archive[idx] = archive[end]
+        pop!(archive)
+    end
+    return nothing
+end
+
+function _archive_trim!(archive, limit, rng)
+    while length(archive) > limit
+        idx = rand(rng, 1:length(archive))
+        archive[idx] = archive[end]
+        pop!(archive)
+    end
+    return nothing
+end
+
+function _select_union_vector(rng, pop, archive, popsize, i, r1)
+    archive_len = length(archive)
+    total = popsize + archive_len
+    while true
+        idx = rand(rng, 1:total)
+        if idx <= popsize
+            if idx != i && idx != r1
+                return view(pop, :, idx)
+            end
+        else
+            return archive[idx - popsize]
+        end
+    end
+end
+
+function _select_pbest_index(rng, sorted_idx, pcount, i)
+    if pcount <= 1
+        return sorted_idx[1]
+    end
+    while true
+        idx = sorted_idx[rand(rng, 1:pcount)]
+        if idx != i || pcount == 1
+            return idx
+        end
+    end
+end
+
+abstract type AbstractStrategy end
+
+struct DEStrategy{T} <: AbstractStrategy
+    F::T
+    CR::T
+end
+
+mutable struct SHADEState{T} <: AbstractStrategy
+    H::Int
+    MCR::Vector{T}
+    MF::Vector{T}
+    k::Int
+    pmax::T
+    cr_vals::Vector{T}
+    f_vals::Vector{T}
+    success_cr::Vector{T}
+    success_f::Vector{T}
+    success_df::Vector{T}
+    sorted_idx::Vector{Int}
+    archive::Vector{Vector{T}}
+    archive_limit::Int
+end
+
+mutable struct LSHADEState{T} <: AbstractStrategy
+    H::Int
+    MCR::Vector{T}
+    MF::Vector{T}
+    k::Int
+    pmax::T
+    cr_vals::Vector{T}
+    f_vals::Vector{T}
+    success_cr::Vector{T}
+    success_f::Vector{T}
+    success_df::Vector{T}
+    sorted_idx::Vector{Int}
+    archive::Vector{Vector{T}}
+    archive_limit::Int
+    init_popsize::Int
+    min_popsize::Int
+    maxevals::Int
+end
+
+mutable struct JSOState{T} <: AbstractStrategy
+    H::Int
+    MCR::Vector{T}
+    MF::Vector{T}
+    k::Int
+    pmax::T
+    pmin::T
+    p::T
+    cr_vals::Vector{T}
+    f_vals::Vector{T}
+    success_cr::Vector{T}
+    success_f::Vector{T}
+    success_df::Vector{T}
+    sorted_idx::Vector{Int}
+    archive::Vector{Vector{T}}
+    archive_limit::Int
+    init_popsize::Int
+    min_popsize::Int
+    maxevals::Int
+    maxiters::Int
+    iteration::Int
+    fixed_idx::Int
+end
+
+function _make_shade_state(T, popsize, memory_size, pmax)
+    H = memory_size
+    return SHADEState(
+        H,
+        fill(T(0.5), H),
+        fill(T(0.5), H),
+        1,
+        T(pmax),
+        Vector{T}(undef, popsize),
+        Vector{T}(undef, popsize),
+        T[],
+        T[],
+        T[],
+        Int[],
+        Vector{Vector{T}}(),
+        popsize,
+    )
+end
+
+function _make_lshade_state(T, popsize, memory_size, pmax, maxevals)
+    H = memory_size
+    return LSHADEState(
+        H,
+        fill(T(0.5), H),
+        fill(T(0.5), H),
+        1,
+        T(pmax),
+        Vector{T}(undef, popsize),
+        Vector{T}(undef, popsize),
+        T[],
+        T[],
+        T[],
+        Int[],
+        Vector{Vector{T}}(),
+        popsize,
+        popsize,
+        4,
+        maxevals,
+    )
+end
+
+function _make_jso_state(T, popsize, memory_size, pmax, maxevals, maxiters)
+    H = memory_size
+    MCR = fill(T(0.8), H)
+    MF = fill(T(0.3), H)
+    fixed_idx = H > 1 ? H : 0
+    if fixed_idx > 0
+        MCR[fixed_idx] = T(0.9)
+        MF[fixed_idx] = T(0.9)
+    end
+    pmax_t = T(pmax)
+    pmin_t = pmax_t / 2
+    return JSOState(
+        H,
+        MCR,
+        MF,
+        1,
+        pmax_t,
+        pmin_t,
+        pmax_t,
+        Vector{T}(undef, popsize),
+        Vector{T}(undef, popsize),
+        T[],
+        T[],
+        T[],
+        Int[],
+        Vector{Vector{T}}(),
+        popsize,
+        popsize,
+        4,
+        maxevals,
+        maxiters,
+        0,
+        fixed_idx,
+    )
+end
+
+_start_generation!(::AbstractStrategy, pop, fitness, rng, iterations, maxiters, evaluations, maxevals) = nothing
+
+function _start_generation!(state::SHADEState, pop, fitness, rng, iterations, maxiters, evaluations, maxevals)
+    state.sorted_idx = sortperm(fitness)
+    empty!(state.success_cr)
+    empty!(state.success_f)
+    empty!(state.success_df)
+    resize!(state.cr_vals, size(pop, 2))
+    resize!(state.f_vals, size(pop, 2))
+    return nothing
+end
+
+function _start_generation!(state::LSHADEState, pop, fitness, rng, iterations, maxiters, evaluations, maxevals)
+    state.sorted_idx = sortperm(fitness)
+    empty!(state.success_cr)
+    empty!(state.success_f)
+    empty!(state.success_df)
+    resize!(state.cr_vals, size(pop, 2))
+    resize!(state.f_vals, size(pop, 2))
+    return nothing
+end
+
+function _start_generation!(state::JSOState, pop, fitness, rng, iterations, maxiters, evaluations, maxevals)
+    state.sorted_idx = sortperm(fitness)
+    empty!(state.success_cr)
+    empty!(state.success_f)
+    empty!(state.success_df)
+    resize!(state.cr_vals, size(pop, 2))
+    resize!(state.f_vals, size(pop, 2))
+    state.iteration = iterations
+    return nothing
+end
+
+function _generate_trial!(state::DEStrategy, trial, pop, fitness, i, rng, lower_t, upper_t, evaluations)
+    dim = size(pop, 1)
+    popsize = size(pop, 2)
+    r1, r2, r3 = _rand3distinct(rng, popsize, i)
+    jrand = rand(rng, 1:dim)
+    @inbounds for j in 1:dim
+        mutant = pop[j, r1] + state.F * (pop[j, r2] - pop[j, r3])
+        if rand(rng) < state.CR || j == jrand
+            trial[j] = mutant
+        else
+            trial[j] = pop[j, i]
+        end
+        if trial[j] < lower_t[j]
+            trial[j] = lower_t[j]
+        elseif trial[j] > upper_t[j]
+            trial[j] = upper_t[j]
+        end
+    end
+    return nothing
+end
+
+function _shade_trial!(state, trial, pop, fitness, i, rng, lower_t, upper_t, evaluations)
+    dim = size(pop, 1)
+    popsize = size(pop, 2)
+    ri = rand(rng, 1:state.H)
+    mcr = state.MCR[ri]
+    if isnan(mcr)
+        CR = zero(mcr)
+    else
+        CR = mcr + 0.1 * randn(rng)
+        if CR < 0
+            CR = zero(mcr)
+        elseif CR > 1
+            CR = one(mcr)
+        end
+    end
+
+    F = _rand_cauchy(rng, state.MF[ri], 0.1)
+    while F <= 0
+        F = _rand_cauchy(rng, state.MF[ri], 0.1)
+    end
+    if F > 1
+        F = one(F)
+    end
+
+    state.cr_vals[i] = CR
+    state.f_vals[i] = F
+
+    pmin = 2 / popsize
+    pmax = state.pmax
+    p = pmin
+    if pmax > pmin
+        p = pmin + rand(rng) * (pmax - pmin)
+    end
+    pcount = max(2, floor(Int, p * popsize))
+    pcount = min(pcount, popsize)
+    pbest_idx = _select_pbest_index(rng, state.sorted_idx, pcount, i)
+
+    r1 = _rand1distinct(rng, popsize, i)
+    r2 = _select_union_vector(rng, pop, state.archive, popsize, i, r1)
+
+    jrand = rand(rng, 1:dim)
+    @inbounds for j in 1:dim
+        mutant = pop[j, i] + F * (pop[j, pbest_idx] - pop[j, i]) + F * (pop[j, r1] - r2[j])
+        if mutant < lower_t[j]
+            mutant = (lower_t[j] + pop[j, i]) / 2
+        elseif mutant > upper_t[j]
+            mutant = (upper_t[j] + pop[j, i]) / 2
+        end
+        if rand(rng) < CR || j == jrand
+            trial[j] = mutant
+        else
+            trial[j] = pop[j, i]
+        end
+    end
+    return nothing
+end
+
+function _generate_trial!(state::SHADEState, trial, pop, fitness, i, rng, lower_t, upper_t, evaluations)
+    return _shade_trial!(state, trial, pop, fitness, i, rng, lower_t, upper_t, evaluations)
+end
+
+function _generate_trial!(state::LSHADEState, trial, pop, fitness, i, rng, lower_t, upper_t, evaluations)
+    return _shade_trial!(state, trial, pop, fitness, i, rng, lower_t, upper_t, evaluations)
+end
+
+function _generate_trial!(state::JSOState, trial, pop, fitness, i, rng, lower_t, upper_t, evaluations)
+    dim = size(pop, 1)
+    popsize = size(pop, 2)
+    ri = rand(rng, 1:state.H)
+    mcr = state.MCR[ri]
+    if isnan(mcr)
+        CR = zero(mcr)
+    else
+        CR = mcr + 0.1 * randn(rng)
+        if CR < 0
+            CR = zero(mcr)
+        elseif CR > 1
+            CR = one(mcr)
+        end
+    end
+
+    F = _rand_cauchy(rng, state.MF[ri], 0.1)
+    while F <= 0
+        F = _rand_cauchy(rng, state.MF[ri], 0.1)
+    end
+    if F > 1
+        F = one(F)
+    end
+
+    if state.maxiters > 0
+        ratio = state.iteration / state.maxiters
+        if ratio < 0.25
+            CR = max(CR, oftype(CR, 0.7))
+        elseif ratio < 0.5
+            CR = max(CR, oftype(CR, 0.6))
+        end
+        if ratio < 0.6 && F > 0.7
+            F = oftype(F, 0.7)
+        end
+    end
+
+    state.cr_vals[i] = CR
+    state.f_vals[i] = F
+
+    p = state.p
+    pcount = max(2, floor(Int, p * popsize))
+    pcount = min(pcount, popsize)
+    pbest_idx = _select_pbest_index(rng, state.sorted_idx, pcount, i)
+
+    r1 = _rand1distinct(rng, popsize, i)
+    r2 = _select_union_vector(rng, pop, state.archive, popsize, i, r1)
+
+    Fw = F
+    if state.maxevals > 0
+        eval_ratio = evaluations / state.maxevals
+        if eval_ratio < 0.2
+            Fw = oftype(F, 0.7) * F
+        elseif eval_ratio < 0.4
+            Fw = oftype(F, 0.8) * F
+        else
+            Fw = oftype(F, 1.2) * F
+        end
+    end
+
+    jrand = rand(rng, 1:dim)
+    @inbounds for j in 1:dim
+        mutant = pop[j, i] + Fw * (pop[j, pbest_idx] - pop[j, i]) + F * (pop[j, r1] - r2[j])
+        if mutant < lower_t[j] || mutant > upper_t[j]
+            mutant = lower_t[j] + rand(rng, eltype(lower_t)) * (upper_t[j] - lower_t[j])
+        end
+        if rand(rng) < CR || j == jrand
+            trial[j] = mutant
+        else
+            trial[j] = pop[j, i]
+        end
+    end
+    return nothing
+end
+
+_on_success!(::AbstractStrategy, i, trial, f_trial, f_parent, pop, rng) = nothing
+
+function _on_success!(state::SHADEState, i, trial, f_trial, f_parent, pop, rng)
+    if f_trial < f_parent
+        push!(state.success_cr, state.cr_vals[i])
+        push!(state.success_f, state.f_vals[i])
+        push!(state.success_df, abs(f_trial - f_parent))
+        _archive_push!(state.archive, state.archive_limit, view(pop, :, i), rng)
+    end
+    return nothing
+end
+
+function _on_success!(state::LSHADEState, i, trial, f_trial, f_parent, pop, rng)
+    if f_trial < f_parent
+        push!(state.success_cr, state.cr_vals[i])
+        push!(state.success_f, state.f_vals[i])
+        push!(state.success_df, abs(f_trial - f_parent))
+        _archive_push!(state.archive, state.archive_limit, view(pop, :, i), rng)
+    end
+    return nothing
+end
+
+_end_generation!(state::AbstractStrategy, pop, fitness, rng, evaluations) = (pop, fitness)
+
+function _end_generation!(state::SHADEState, pop, fitness, rng, evaluations)
+    if !isempty(state.success_cr)
+        state.MCR[state.k] = _weighted_arith_mean(state.success_cr, state.success_df)
+        state.MF[state.k] = _weighted_lehmer_mean(state.success_f, state.success_df)
+        state.k = state.k == state.H ? 1 : state.k + 1
+    end
+    return pop, fitness
+end
+
+function _lshade_population_size(state::LSHADEState, evaluations)
+    nfe = min(evaluations, state.maxevals)
+    slope = (state.min_popsize - state.init_popsize) / state.maxevals
+    new_size = round(Int, slope * nfe + state.init_popsize)
+    return clamp(new_size, state.min_popsize, state.init_popsize)
+end
+
+function _lshade_population_size(state::JSOState, evaluations)
+    nfe = min(evaluations, state.maxevals)
+    slope = (state.min_popsize - state.init_popsize) / state.maxevals
+    new_size = round(Int, slope * nfe + state.init_popsize)
+    return clamp(new_size, state.min_popsize, state.init_popsize)
+end
+
+function _reduce_population(pop, fitness, new_size)
+    idx = sortperm(fitness)
+    keep = idx[1:new_size]
+    return pop[:, keep], fitness[keep]
+end
+
+function _end_generation!(state::LSHADEState, pop, fitness, rng, evaluations)
+    if !isempty(state.success_cr)
+        if maximum(state.success_cr) == 0
+            state.MCR[state.k] = oftype(state.MCR[state.k], NaN)
+        else
+            state.MCR[state.k] = _weighted_lehmer_mean(state.success_cr, state.success_df)
+        end
+        state.MF[state.k] = _weighted_lehmer_mean(state.success_f, state.success_df)
+        state.k = state.k == state.H ? 1 : state.k + 1
+    end
+
+    new_size = _lshade_population_size(state, evaluations)
+    if new_size < size(pop, 2)
+        pop, fitness = _reduce_population(pop, fitness, new_size)
+        state.archive_limit = new_size
+        _archive_trim!(state.archive, state.archive_limit, rng)
+    end
+
+    return pop, fitness
+end
+
+function _end_generation!(state::JSOState, pop, fitness, rng, evaluations)
+    if !isempty(state.success_cr)
+        if state.fixed_idx > 0 && state.k == state.fixed_idx
+            state.k = 1
+        else
+            if maximum(state.success_cr) == 0
+                mean_cr = oftype(state.MCR[state.k], NaN)
+            else
+                mean_cr = _weighted_lehmer_mean(state.success_cr, state.success_df)
+            end
+            mean_f = _weighted_lehmer_mean(state.success_f, state.success_df)
+            state.MCR[state.k] = (state.MCR[state.k] + mean_cr) / 2
+            state.MF[state.k] = (state.MF[state.k] + mean_f) / 2
+            state.k = state.k == state.H ? 1 : state.k + 1
+        end
+    end
+
+    if state.maxevals > 0
+        nfe = min(evaluations, state.maxevals)
+        progress = oftype(state.p, nfe) / oftype(state.p, state.maxevals)
+        state.p = state.pmax - (state.pmax - state.pmin) * progress
+        state.p = clamp(state.p, state.pmin, state.pmax)
+    end
+
+    new_size = _lshade_population_size(state, evaluations)
+    if new_size < size(pop, 2)
+        pop, fitness = _reduce_population(pop, fitness, new_size)
+        state.archive_limit = new_size
+        _archive_trim!(state.archive, state.archive_limit, rng)
+    end
+
+    return pop, fitness
+end
+
+function _run_evolution_serial!(f, pop, fitness, trial, lower_t, upper_t, rng, strategy,
+    maxiters, maxevals, target_t, history)
+    T = eltype(pop)
+    popsize = size(pop, 2)
+    best_idx = argmin(fitness)
+    best_f = fitness[best_idx]
+    best_x = copy(view(pop, :, best_idx))
+
+    history_best = history ? Vector{T}(undef, maxiters) : T[]
+    iterations = 0
+    evaluations = popsize
+    stop_due_to_evals = false
+
+    while iterations < maxiters && evaluations < maxevals && best_f > target_t
+        iterations += 1
+        _start_generation!(strategy, pop, fitness, rng, iterations, maxiters, evaluations, maxevals)
+        popsize = size(pop, 2)
+        for i in 1:popsize
+            if evaluations >= maxevals
+                stop_due_to_evals = true
+                break
+            end
+            _generate_trial!(strategy, trial, pop, fitness, i, rng, lower_t, upper_t, evaluations)
+            f_trial = T(f(trial))
+            evaluations += 1
+            if f_trial <= fitness[i]
+                _on_success!(strategy, i, trial, f_trial, fitness[i], pop, rng)
+                fitness[i] = f_trial
+                copyto!(view(pop, :, i), trial)
+                if f_trial < best_f
+                    best_f = f_trial
+                    copyto!(best_x, trial)
+                end
+            end
+        end
+
+        if history
+            history_best[iterations] = best_f
+        end
+
+        pop, fitness = _end_generation!(strategy, pop, fitness, rng, evaluations)
+        if stop_due_to_evals
+            break
+        end
+    end
+
+    if history
+        resize!(history_best, iterations)
+    end
+
+    return best_x, best_f, evaluations, iterations, history_best
+end
+
+function _run_evolution_parallel!(f, pop, fitness, trial, lower_t, upper_t, rng, strategy,
+    maxiters, maxevals, target_t, history)
+    T = eltype(pop)
+    dim = size(pop, 1)
+    popsize = size(pop, 2)
+    best_idx = argmin(fitness)
+    best_f = fitness[best_idx]
+    best_x = copy(view(pop, :, best_idx))
+
+    history_best = history ? Vector{T}(undef, maxiters) : T[]
+    iterations = 0
+    evaluations = popsize
+    stop_due_to_evals = false
+
+    while iterations < maxiters && evaluations < maxevals && best_f > target_t
+        iterations += 1
+        _start_generation!(strategy, pop, fitness, rng, iterations, maxiters, evaluations, maxevals)
+        popsize = size(pop, 2)
+
+        remaining = maxevals - evaluations
+        n_eval = min(popsize, remaining)
+        if n_eval <= 0
+            stop_due_to_evals = true
+            break
+        end
+
+        parent_pop = copy(pop)
+        parent_fitness = copy(fitness)
+
+        seeds = Vector{UInt64}(undef, n_eval)
+        @inbounds for i in 1:n_eval
+            seeds[i] = rand(rng, UInt64)
+        end
+
+        trials = Matrix{T}(undef, dim, n_eval)
+        f_trials = Vector{T}(undef, n_eval)
+
+        Threads.@threads for i in 1:n_eval
+            local_rng = Random.Xoshiro(seeds[i])
+            trial_i = view(trials, :, i)
+            eval_count = evaluations + (i - 1)
+            _generate_trial!(strategy, trial_i, parent_pop, parent_fitness, i, local_rng, lower_t, upper_t, eval_count)
+            f_trials[i] = T(f(trial_i))
+        end
+        evaluations += n_eval
+
+        accept = Vector{Bool}(undef, n_eval)
+        Threads.@threads for i in 1:n_eval
+            if f_trials[i] <= parent_fitness[i]
+                accept[i] = true
+                fitness[i] = f_trials[i]
+                copyto!(view(pop, :, i), view(trials, :, i))
+            else
+                accept[i] = false
+            end
+        end
+
+        for i in 1:n_eval
+            if accept[i]
+                _on_success!(strategy, i, view(trials, :, i), f_trials[i], parent_fitness[i], parent_pop, rng)
+            end
+        end
+
+        best_idx = argmin(fitness)
+        best_f = fitness[best_idx]
+        copyto!(best_x, view(pop, :, best_idx))
+
+        if history
+            history_best[iterations] = best_f
+        end
+
+        pop, fitness = _end_generation!(strategy, pop, fitness, rng, evaluations)
+        if evaluations >= maxevals
+            stop_due_to_evals = true
+        end
+        if stop_due_to_evals
+            break
+        end
+    end
+
+    if history
+        resize!(history_best, iterations)
+    end
+
+    return best_x, best_f, evaluations, iterations, history_best
+end
+
+function _run_evolution!(f, pop, fitness, trial, lower_t, upper_t, rng, strategy,
+    maxiters, maxevals, target_t, history, parallel::Bool)
+    if parallel
+        return _run_evolution_parallel!(
+            f,
+            pop,
+            fitness,
+            trial,
+            lower_t,
+            upper_t,
+            rng,
+            strategy,
+            maxiters,
+            maxevals,
+            target_t,
+            history,
+        )
+    end
+    return _run_evolution_serial!(
+        f,
+        pop,
+        fitness,
+        trial,
+        lower_t,
+        upper_t,
+        rng,
+        strategy,
+        maxiters,
+        maxevals,
+        target_t,
+        history,
+    )
+end
