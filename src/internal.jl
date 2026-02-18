@@ -1,6 +1,23 @@
 const _ALGORITHMS = (:de, :shade, :lshade, :jso)
+const _LOCAL_METHODS = (:nelder_mead, :lbfgs)
 
-function _validate_inputs(lower, upper, popsize, maxiters, maxevals, F, CR, algorithm, memory_size, pmax)
+function _validate_inputs(
+    lower,
+    upper,
+    popsize,
+    maxiters,
+    maxevals,
+    F,
+    CR,
+    algorithm,
+    memory_size,
+    pmax,
+    target,
+    local_method,
+    local_maxiters,
+    local_tol,
+    message_every,
+)
     if isempty(lower) || isempty(upper)
         throw(ArgumentError("lower and upper must be non-empty"))
     end
@@ -27,20 +44,28 @@ function _validate_inputs(lower, upper, popsize, maxiters, maxevals, F, CR, algo
     if algorithm ∉ _ALGORITHMS
         throw(ArgumentError("algorithm must be one of :de, :shade, :lshade, or :jso"))
     end
-    if algorithm == :de
-        if !(F > 0 && F <= 2)
-            throw(ArgumentError("F must be in (0, 2]"))
-        end
-        if !(CR >= 0 && CR <= 1)
-            throw(ArgumentError("CR must be in [0, 1]"))
-        end
-    else
-        if !(F > 0 && F <= 2)
-            throw(ArgumentError("F must be in (0, 2]"))
-        end
-        if !(CR >= 0 && CR <= 1)
-            throw(ArgumentError("CR must be in [0, 1]"))
-        end
+    if !(F > 0 && F <= 2)
+        throw(ArgumentError("F must be in (0, 2]"))
+    end
+    if !(CR >= 0 && CR <= 1)
+        throw(ArgumentError("CR must be in [0, 1]"))
+    end
+    if isnan(target)
+        throw(ArgumentError("target must not be NaN"))
+    end
+    if local_method ∉ _LOCAL_METHODS
+        throw(ArgumentError("local_method must be one of :nelder_mead or :lbfgs"))
+    end
+    if local_maxiters <= 0
+        throw(ArgumentError("local_maxiters must be positive"))
+    end
+    if !(isfinite(local_tol) && local_tol > 0)
+        throw(ArgumentError("local_tol must be finite and positive"))
+    end
+    if message_every <= 0
+        throw(ArgumentError("message_every must be positive"))
+    end
+    if algorithm != :de
         if !isnothing(memory_size) && memory_size <= 0
             throw(ArgumentError("memory_size must be positive"))
         end
@@ -49,6 +74,91 @@ function _validate_inputs(lower, upper, popsize, maxiters, maxevals, F, CR, algo
         end
     end
     return nothing
+end
+
+function _print_generation_message(
+    message::Bool,
+    message_every::Int,
+    job_id::Int,
+    iterations::Int,
+    maxiters::Int,
+    evaluations::Int,
+    maxevals::Int,
+    best_f,
+    best_x,
+)
+    if !message
+        return nothing
+    end
+    if iterations % message_every != 0
+        return nothing
+    end
+    println(
+        "[DE] job=",
+        job_id,
+        " generation=",
+        iterations,
+        "/",
+        maxiters,
+        " evaluations=",
+        evaluations,
+        "/",
+        maxevals,
+        " best_f=",
+        best_f,
+        " best_x=",
+        best_x,
+    )
+    return nothing
+end
+
+function _objective_value_or_inf(f, x, T, message, job_id, phase, evaluations, candidate_index)
+    objective_value = f(x)
+    converted_value = try
+        T(objective_value)
+    catch conversion_error
+        if message
+            println(
+                stderr,
+                "[WARNING] job=",
+                job_id,
+                " phase=",
+                phase,
+                " evaluations=",
+                evaluations,
+                " candidate=",
+                candidate_index,
+                " objective conversion failed with error=",
+                typeof(conversion_error),
+                " value_type=",
+                typeof(objective_value),
+                " value=",
+                objective_value,
+                " treated_as=Inf",
+            )
+        end
+        return T(Inf)
+    end
+    if isfinite(converted_value)
+        return converted_value
+    end
+    if message
+        println(
+            stderr,
+            "[WARNING] job=",
+            job_id,
+            " phase=",
+            phase,
+            " evaluations=",
+            evaluations,
+            " candidate=",
+            candidate_index,
+            " objective returned non-finite value=",
+            converted_value,
+            " treated_as=Inf",
+        )
+    end
+    return T(Inf)
 end
 
 function _rand1distinct(rng, n, exclude)
@@ -285,7 +395,7 @@ end
 
 _start_generation!(::AbstractStrategy, pop, fitness, rng, iterations, maxiters, evaluations, maxevals) = nothing
 
-function _start_generation!(state::SHADEState, pop, fitness, rng, iterations, maxiters, evaluations, maxevals)
+function _prepare_generation!(state, pop, fitness)
     state.sorted_idx = sortperm(fitness)
     empty!(state.success_cr)
     empty!(state.success_f)
@@ -293,25 +403,18 @@ function _start_generation!(state::SHADEState, pop, fitness, rng, iterations, ma
     resize!(state.cr_vals, size(pop, 2))
     resize!(state.f_vals, size(pop, 2))
     return nothing
+end
+
+function _start_generation!(state::SHADEState, pop, fitness, rng, iterations, maxiters, evaluations, maxevals)
+    return _prepare_generation!(state, pop, fitness)
 end
 
 function _start_generation!(state::LSHADEState, pop, fitness, rng, iterations, maxiters, evaluations, maxevals)
-    state.sorted_idx = sortperm(fitness)
-    empty!(state.success_cr)
-    empty!(state.success_f)
-    empty!(state.success_df)
-    resize!(state.cr_vals, size(pop, 2))
-    resize!(state.f_vals, size(pop, 2))
-    return nothing
+    return _prepare_generation!(state, pop, fitness)
 end
 
 function _start_generation!(state::JSOState, pop, fitness, rng, iterations, maxiters, evaluations, maxevals)
-    state.sorted_idx = sortperm(fitness)
-    empty!(state.success_cr)
-    empty!(state.success_f)
-    empty!(state.success_df)
-    resize!(state.cr_vals, size(pop, 2))
-    resize!(state.f_vals, size(pop, 2))
+    _prepare_generation!(state, pop, fitness)
     state.iteration = iterations
     return nothing
 end
@@ -478,17 +581,7 @@ end
 
 _on_success!(::AbstractStrategy, i, trial, f_trial, f_parent, pop, rng) = nothing
 
-function _on_success!(state::SHADEState, i, trial, f_trial, f_parent, pop, rng)
-    if f_trial < f_parent
-        push!(state.success_cr, state.cr_vals[i])
-        push!(state.success_f, state.f_vals[i])
-        push!(state.success_df, abs(f_trial - f_parent))
-        _archive_push!(state.archive, state.archive_limit, view(pop, :, i), rng)
-    end
-    return nothing
-end
-
-function _on_success!(state::LSHADEState, i, trial, f_trial, f_parent, pop, rng)
+function _on_success!(state::Union{SHADEState, LSHADEState}, i, trial, f_trial, f_parent, pop, rng)
     if f_trial < f_parent
         push!(state.success_cr, state.cr_vals[i])
         push!(state.success_f, state.f_vals[i])
@@ -509,14 +602,7 @@ function _end_generation!(state::SHADEState, pop, fitness, rng, evaluations)
     return pop, fitness
 end
 
-function _lshade_population_size(state::LSHADEState, evaluations)
-    nfe = min(evaluations, state.maxevals)
-    slope = (state.min_popsize - state.init_popsize) / state.maxevals
-    new_size = round(Int, slope * nfe + state.init_popsize)
-    return clamp(new_size, state.min_popsize, state.init_popsize)
-end
-
-function _lshade_population_size(state::JSOState, evaluations)
+function _lshade_population_size(state::Union{LSHADEState, JSOState}, evaluations)
     nfe = min(evaluations, state.maxevals)
     slope = (state.min_popsize - state.init_popsize) / state.maxevals
     new_size = round(Int, slope * nfe + state.init_popsize)
@@ -584,8 +670,24 @@ function _end_generation!(state::JSOState, pop, fitness, rng, evaluations)
     return pop, fitness
 end
 
-function _run_evolution_serial!(f, pop, fitness, trial, lower_t, upper_t, rng, strategy,
-    maxiters, maxevals, target_t, history)
+function _run_evolution_serial!(
+    f,
+    pop,
+    fitness,
+    trial,
+    lower_t,
+    upper_t,
+    rng,
+    strategy,
+    maxiters,
+    maxevals,
+    target_t,
+    history,
+    trace_rows,
+    job_id,
+    message,
+    message_every,
+)
     T = eltype(pop)
     popsize = size(pop, 2)
     best_idx = argmin(fitness)
@@ -607,7 +709,16 @@ function _run_evolution_serial!(f, pop, fitness, trial, lower_t, upper_t, rng, s
                 break
             end
             _generate_trial!(strategy, trial, pop, fitness, i, rng, lower_t, upper_t, evaluations)
-            f_trial = T(f(trial))
+            f_trial = _objective_value_or_inf(
+                f,
+                trial,
+                T,
+                message,
+                job_id,
+                :de_generation,
+                evaluations + 1,
+                i,
+            )
             evaluations += 1
             if f_trial <= fitness[i]
                 _on_success!(strategy, i, trial, f_trial, fitness[i], pop, rng)
@@ -620,11 +731,37 @@ function _run_evolution_serial!(f, pop, fitness, trial, lower_t, upper_t, rng, s
             end
         end
 
+        pop, fitness = _end_generation!(strategy, pop, fitness, rng, evaluations)
+        best_idx = argmin(fitness)
+        best_f = fitness[best_idx]
+        copyto!(best_x, view(pop, :, best_idx))
         if history
             history_best[iterations] = best_f
         end
-
-        pop, fitness = _end_generation!(strategy, pop, fitness, rng, evaluations)
+        if !isnothing(trace_rows)
+            push!(
+                trace_rows,
+                (
+                    generation=iterations,
+                    job_id=job_id,
+                    phase=:de_generation,
+                    best_x=copy(best_x),
+                    best_f=best_f,
+                    evaluations=evaluations,
+                ),
+            )
+        end
+        _print_generation_message(
+            message,
+            message_every,
+            job_id,
+            iterations,
+            maxiters,
+            evaluations,
+            maxevals,
+            best_f,
+            best_x,
+        )
         if stop_due_to_evals
             break
         end
@@ -637,8 +774,24 @@ function _run_evolution_serial!(f, pop, fitness, trial, lower_t, upper_t, rng, s
     return best_x, best_f, evaluations, iterations, history_best
 end
 
-function _run_evolution_parallel!(f, pop, fitness, trial, lower_t, upper_t, rng, strategy,
-    maxiters, maxevals, target_t, history)
+function _run_evolution_parallel!(
+    f,
+    pop,
+    fitness,
+    trial,
+    lower_t,
+    upper_t,
+    rng,
+    strategy,
+    maxiters,
+    maxevals,
+    target_t,
+    history,
+    trace_rows,
+    job_id,
+    message,
+    message_every,
+)
     T = eltype(pop)
     dim = size(pop, 1)
     popsize = size(pop, 2)
@@ -679,7 +832,16 @@ function _run_evolution_parallel!(f, pop, fitness, trial, lower_t, upper_t, rng,
             trial_i = view(trials, :, i)
             eval_count = evaluations + (i - 1)
             _generate_trial!(strategy, trial_i, parent_pop, parent_fitness, i, local_rng, lower_t, upper_t, eval_count)
-            f_trials[i] = T(f(trial_i))
+            f_trials[i] = _objective_value_or_inf(
+                f,
+                trial_i,
+                T,
+                message,
+                job_id,
+                :de_generation,
+                eval_count + 1,
+                i,
+            )
         end
         evaluations += n_eval
 
@@ -700,15 +862,37 @@ function _run_evolution_parallel!(f, pop, fitness, trial, lower_t, upper_t, rng,
             end
         end
 
+        pop, fitness = _end_generation!(strategy, pop, fitness, rng, evaluations)
         best_idx = argmin(fitness)
         best_f = fitness[best_idx]
         copyto!(best_x, view(pop, :, best_idx))
-
         if history
             history_best[iterations] = best_f
         end
-
-        pop, fitness = _end_generation!(strategy, pop, fitness, rng, evaluations)
+        if !isnothing(trace_rows)
+            push!(
+                trace_rows,
+                (
+                    generation=iterations,
+                    job_id=job_id,
+                    phase=:de_generation,
+                    best_x=copy(best_x),
+                    best_f=best_f,
+                    evaluations=evaluations,
+                ),
+            )
+        end
+        _print_generation_message(
+            message,
+            message_every,
+            job_id,
+            iterations,
+            maxiters,
+            evaluations,
+            maxevals,
+            best_f,
+            best_x,
+        )
         if evaluations >= maxevals
             stop_due_to_evals = true
         end
@@ -724,8 +908,25 @@ function _run_evolution_parallel!(f, pop, fitness, trial, lower_t, upper_t, rng,
     return best_x, best_f, evaluations, iterations, history_best
 end
 
-function _run_evolution!(f, pop, fitness, trial, lower_t, upper_t, rng, strategy,
-    maxiters, maxevals, target_t, history, parallel::Bool)
+function _run_evolution!(
+    f,
+    pop,
+    fitness,
+    trial,
+    lower_t,
+    upper_t,
+    rng,
+    strategy,
+    maxiters,
+    maxevals,
+    target_t,
+    history,
+    parallel::Bool,
+    trace_rows,
+    job_id,
+    message,
+    message_every,
+)
     if parallel
         return _run_evolution_parallel!(
             f,
@@ -740,6 +941,10 @@ function _run_evolution!(f, pop, fitness, trial, lower_t, upper_t, rng, strategy
             maxevals,
             target_t,
             history,
+            trace_rows,
+            job_id,
+            message,
+            message_every,
         )
     end
     return _run_evolution_serial!(
@@ -755,5 +960,107 @@ function _run_evolution!(f, pop, fitness, trial, lower_t, upper_t, rng, strategy
         maxevals,
         target_t,
         history,
+        trace_rows,
+        job_id,
+        message,
+        message_every,
     )
+end
+
+function _local_inner_method(local_method::Symbol)
+    if local_method == :nelder_mead
+        return Optim.NelderMead()
+    end
+    return Optim.LBFGS()
+end
+
+function _run_local_refinement(
+    f,
+    de_best_x,
+    de_best_f,
+    lower_t,
+    upper_t,
+    local_method,
+    local_maxiters,
+    local_tol,
+    job_id,
+    de_evaluations,
+)
+    T = eltype(de_best_x)
+    local_best_x = copy(de_best_x)
+    local_best_f = de_best_f
+    local_status = :failed
+    local_evaluations = 0
+    local_start_ns = time_ns()
+
+    objective_calls = Ref(0)
+    bounded_objective = function (x)
+        objective_calls[] += 1
+        return f(x)
+    end
+
+    local_options = Optim.Options(
+        iterations=local_maxiters,
+        x_abstol=local_tol,
+        x_reltol=local_tol,
+        f_abstol=local_tol,
+        f_reltol=local_tol,
+        g_abstol=local_tol,
+        store_trace=false,
+        show_trace=false,
+        show_warnings=false,
+    )
+
+    local_result = nothing
+    try
+        if local_method == :lbfgs
+            local_result = Optim.optimize(
+                bounded_objective,
+                lower_t,
+                upper_t,
+                de_best_x,
+                Optim.Fminbox(_local_inner_method(local_method)),
+                local_options;
+                autodiff=:forward,
+            )
+        else
+            local_result = Optim.optimize(
+                bounded_objective,
+                lower_t,
+                upper_t,
+                de_best_x,
+                Optim.Fminbox(_local_inner_method(local_method)),
+                local_options,
+            )
+        end
+        local_best_x = Vector{T}(Optim.minimizer(local_result))
+        local_best_f = T(Optim.minimum(local_result))
+        if isfinite(local_best_f)
+            local_status = Optim.converged(local_result) ? :success : :stopped
+        else
+            local_best_x = copy(de_best_x)
+            local_best_f = de_best_f
+            local_status = :failed
+        end
+    catch local_error
+        println(
+            stderr,
+            "[WARNING] job=",
+            job_id,
+            " phase=local_refine",
+            " evaluations=",
+            de_evaluations + objective_calls[],
+            " local optimization failed with error=",
+            typeof(local_error),
+            " message=",
+            local_error,
+        )
+        local_best_x = copy(de_best_x)
+        local_best_f = de_best_f
+        local_status = :failed
+    end
+
+    local_evaluations = objective_calls[]
+    elapsed_local_sec = (time_ns() - local_start_ns) / 1e9
+    return local_best_x, local_best_f, local_status, local_evaluations, elapsed_local_sec
 end

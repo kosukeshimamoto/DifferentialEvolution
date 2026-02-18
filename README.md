@@ -46,7 +46,7 @@ res_jso = optimize(f, lower, upper; rng=rng, algorithm=:jso, maxiters=200, pmax=
 ## API
 
 ```
-optimize(f, lower, upper; rng, algorithm, popsize, maxiters, maxevals, F, CR, memory_size, pmax, target, history, parallel)
+optimize(f, lower, upper; rng, algorithm, popsize, maxiters, maxevals, F, CR, memory_size, pmax, target, history, parallel, local_refine, local_method, local_maxiters, local_tol, trace_history, job_id, message, message_every)
 ```
 
 - `f`: objective function taking an `AbstractVector`
@@ -63,9 +63,17 @@ Keywords:
 - `CR`: crossover probability in `[0, 1]` (default `0.9`)
 - `memory_size`: history size for SHADE/L-SHADE (default `popsize`; for jSO default `5`)
 - `pmax`: upper bound for p-best fraction in SHADE/L-SHADE/jSO (default `0.2`; jSO paper uses `0.25`)
-- `target`: stop when `best_f <= target` (default `-Inf`)
+- `target`: stop when `best_f <= target` (default `-Inf`; `NaN` is invalid)
 - `history`: store best objective after each iteration (default `true`)
 - `parallel`: evaluate a generation in parallel using threads (default `false`)
+- `local_refine`: run a local refinement step after DE finishes (default `false`)
+- `local_method`: local optimizer, `:nelder_mead` or `:lbfgs` (default `:nelder_mead`)
+- `local_maxiters`: max iterations for local refinement (default `200`)
+- `local_tol`: tolerance used by local refinement (default `1e-8`)
+- `trace_history`: store per-generation and local-phase records in `result.trace` (default `false`)
+- `job_id`: integer job identifier stored in trace rows (default `0`)
+- `message`: print progress messages during optimization (default `false`)
+- `message_every`: print every N generations when `message=true` (default `1`)
 
 Notes:
 
@@ -80,15 +88,39 @@ Notes:
   generated from the same parent population and evaluated in parallel. Results
   can differ from the default asynchronous update but remain reproducible when
   `f` is deterministic.
+- If `f` returns non-finite values (`NaN`/`Inf`) or a non-convertible type,
+  the value is treated as `Inf` so the run continues safely.
+- Local refinement starts from the DE best solution. If local optimization fails,
+  the DE best solution is returned safely.
+- With `message=true`, DE progress is printed as:
+  `generation/current_maxiters`, evaluation count, best parameter, and best objective value.
 
 Return value `Result` fields:
 
 - `best_x`: best solution vector
 - `best_f`: objective value at `best_x`
-- `status`: `:target_reached`, `:maxiters`, `:maxevals`, or `:stopped`
-- `evaluations`: number of objective evaluations
+- `status`: final outcome, `:target_reached` or `:not_reached`
+- `de_status`: DE-phase stop reason, `:target_reached`, `:maxiters`, `:maxevals`, or `:stopped`
+- `evaluations`: total number of objective evaluations (DE + local if enabled)
 - `iterations`: number of iterations executed
 - `history`: best objective value after each iteration (empty when `history=false`)
+- `de_best_x`, `de_best_f`: best solution/value from DE phase
+- `local_best_x`, `local_best_f`: best solution/value from local phase
+- `local_status`: `:disabled`, `:success`, `:failed`, or `:stopped`
+- `de_evaluations`, `local_evaluations`, `total_evaluations`
+- `elapsed_de_sec`, `elapsed_local_sec`, `elapsed_total_sec`
+- `settings`: resolved run settings used for this run
+- `trace`: list of `TraceRecord` rows (`generation`, `job_id`, `phase`, `best_x`, `best_f`, `evaluations`)
+
+## Migration note
+
+`status` now represents the final outcome after the full run (DE + optional local refinement):
+
+- `:target_reached` or `:not_reached`
+
+If you previously interpreted `status` as the DE loop stop reason, use `de_status` instead:
+
+- `:target_reached`, `:maxiters`, `:maxevals`, or `:stopped`
 
 ## Reproducibility
 
@@ -105,3 +137,95 @@ res2 = optimize(f, lower, upper; rng=rng2, maxiters=100)
 @assert res1.best_x == res2.best_x
 @assert res1.best_f == res2.best_f
 ```
+
+## Hybrid refinement example
+
+```julia
+rng = MersenneTwister(42)
+res_hybrid = optimize(
+    f,
+    lower,
+    upper;
+    rng=rng,
+    algorithm=:shade,
+    maxevals=200000,
+    local_refine=true,
+    local_method=:nelder_mead,
+    local_maxiters=300,
+    local_tol=1e-8,
+)
+
+@show res_hybrid.de_best_f
+@show res_hybrid.local_best_f
+@show res_hybrid.best_f
+@show res_hybrid.local_status
+```
+
+## Trace CSV export example
+
+```julia
+rng = MersenneTwister(42)
+res_trace = optimize(
+    f,
+    lower,
+    upper;
+    rng=rng,
+    algorithm=:lshade,
+    maxevals=200000,
+    local_refine=true,
+    local_method=:lbfgs,
+    trace_history=true,
+    job_id=42,
+    message=true,
+    message_every=10,
+)
+
+write_trace_csv(res_trace, "results/seed_42_trace.csv")
+```
+
+## Multi-seed runs (job array style)
+
+Single seed run (JSON output to `results/seed_<seed>.json`):
+
+```bash
+SEED=12 JULIA_NUM_THREADS=4 julia --project=. scripts/run_de.jl
+```
+
+`scripts/run_de.jl` uses `LOCAL_REFINE=false` by default (same as the library API default).
+
+With runtime settings:
+
+```bash
+SEED=12 OBJECTIVE=rastrigin DIM=20 ALGORITHM=shade MAXEVALS=200000 LOCAL_REFINE=true LOCAL_METHOD=nelder_mead julia --project=. scripts/run_de.jl
+
+# Also write per-generation trace CSV:
+SEED=12 TRACE_CSV=true julia --project=. scripts/run_de.jl
+
+# Also print progress every 10 generations:
+SEED=12 MESSAGE=true MESSAGE_EVERY=10 julia --project=. scripts/run_de.jl
+```
+
+Aggregate all seed outputs:
+
+```bash
+julia --project=. scripts/summarize_runs.jl --results_dir results --top_k 10
+```
+
+If some run files have malformed JSON, missing fields, or invalid/non-finite `best_f`, they are skipped and listed in `summary.json` under `skipped_runs`.
+
+Slurm template:
+
+```bash
+sbatch --array=1-100%20 slurm/de_array.sbatch
+```
+
+## References
+
+Source papers are referenced by link (PDF files are not bundled in this repository).
+
+- R. Storn and K. Price (1997), *Differential Evolution - A Simple and Efficient Heuristic for global Optimization over Continuous Spaces*: <https://doi.org/10.1023/A:1008202821328>
+- R. Tanabe and A. Fukunaga (2013), *Evaluating the performance of SHADE on CEC 2013 benchmark problems*: <https://scholar.google.com/scholar?q=Evaluating+the+performance+of+SHADE+on+CEC+2013+benchmark+problems>
+- R. Tanabe and A. Fukunaga (2014), *Improving the search performance of SHADE using linear population size reduction*: <https://scholar.google.com/scholar?q=Improving+the+search+performance+of+SHADE+using+linear+population+size+reduction>
+- J. Brest et al. (2017), *Single objective real-parameter optimization: Algorithm jSO*: <https://scholar.google.com/scholar?q=Single+objective+real-parameter+optimization+Algorithm+jSO>
+- B. Zamuda et al. (2017), *Adaptive constraint handling and Success History Differential Evolution for CEC 2017*: <https://scholar.google.com/scholar?q=Adaptive+constraint+handling+and+Success+History+Differential+Evolution+for+CEC+2017+Constrained+Real-Parameter+Optimization>
+- M. Viktorin et al. (2019), *Distance based parameter adaptation for Success-History based Differential Evolution*: <https://scholar.google.com/scholar?q=Distance+based+parameter+adaptation+for+Success-History+based+Differential+Evolution>

@@ -1,8 +1,3 @@
-using Pkg
-
-Pkg.activate(; temp=true)
-Pkg.develop(path=pwd())
-
 using DifferentialEvolution
 using Random
 using Statistics
@@ -108,10 +103,11 @@ function main()
     maxevals = parse(Int, get(ENV, "PROFILE_MAXEVALS", "200000"))
     popsize = parse(Int, get(ENV, "PROFILE_POPSZ", "250"))
     profile_runs = parse(Int, get(ENV, "PROFILE_RUNS", "3"))
+    profile_prefix = "rastrigin_" * string(dim) * "d"
 
-    summary_path = joinpath(outdir, "rastrigin_50d_summary.txt")
+    summary_path = joinpath(outdir, profile_prefix * "_summary.txt")
     open(summary_path, "w") do io
-        println(io, "Rastrigin 50D profile summary")
+        println(io, "Rastrigin ", dim, "D profile summary")
         println(io, "generated: ", timestamp)
         println(io, "maxevals: ", maxevals)
         println(io, "popsize: ", popsize)
@@ -123,7 +119,7 @@ function main()
             per_eval = elapsed / maxevals
             println(io, @sprintf("%s: elapsed=%.3f s, per_eval=%.3e s, allocated=%.1f MB", uppercase(String(alg)), elapsed, per_eval, alloc / 1024^2))
 
-            profile_path = joinpath(outdir, "rastrigin_50d_profile_" * String(alg) * ".txt")
+            profile_path = joinpath(outdir, profile_prefix * "_profile_" * String(alg) * ".txt")
             open(profile_path, "w") do pio
                 Profile.print(pio; format=:flat, sortedby=:count, maxdepth=20)
             end

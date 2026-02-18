@@ -1,4 +1,5 @@
 using DifferentialEvolution
+using JSON3
 using Random
 using Test
 
@@ -51,6 +52,12 @@ end
     @test_throws ArgumentError optimize(f, [0.0], [1.0]; rng=rng, algorithm=:shade, pmax=0.0)
     @test_throws ArgumentError optimize(f, [0.0], [1.0]; rng=rng, algorithm=:lshade, pmax=1.5)
     @test_throws ArgumentError optimize(f, [0.0], [1.0]; rng=rng, algorithm=:jso, pmax=1.5)
+    @test_throws ArgumentError optimize(f, Float64[], Float64[]; rng=rng, algorithm=:jso)
+    @test_throws ArgumentError optimize(f, [0.0], [1.0]; rng=rng, target=NaN)
+    @test_throws ArgumentError optimize(f, [0.0], [1.0]; rng=rng, local_method=:unknown)
+    @test_throws ArgumentError optimize(f, [0.0], [1.0]; rng=rng, local_maxiters=0)
+    @test_throws ArgumentError optimize(f, [0.0], [1.0]; rng=rng, local_tol=0.0)
+    @test_throws ArgumentError optimize(f, [0.0], [1.0]; rng=rng, message_every=0)
 end
 
 @testset "sanity" begin
@@ -228,6 +235,29 @@ end
 
     @test isempty(res.history)
     @test res.iterations == 10
+end
+
+@testset "non-finite objective values are treated as Inf" begin
+    function always_nan(_)
+        return NaN
+    end
+    function always_string(_)
+        return "not-a-number"
+    end
+
+    lower = fill(0.0, 2)
+    upper = fill(1.0, 2)
+    rng = MersenneTwister(808)
+    res = optimize(always_nan, lower, upper; rng=rng, maxiters=8, popsize=8, history=false, target=-Inf)
+    rng_string = MersenneTwister(809)
+    res_string = optimize(always_string, lower, upper; rng=rng_string, maxiters=8, popsize=8, history=false, target=-Inf)
+
+    @test isinf(res.best_f)
+    @test res.status == :not_reached
+    @test res.de_status in (:maxiters, :maxevals)
+    @test isinf(res_string.best_f)
+    @test res_string.status == :not_reached
+    @test res_string.de_status in (:maxiters, :maxevals)
 end
 
 @testset "higher dimension function" begin
@@ -557,5 +587,260 @@ end
             @test res.history[i] <= res.history[i - 1] + 1e-12
         end
         @test res.best_f == res.history[end]
+    end
+end
+
+@testset "local refinement improves or keeps DE best" begin
+    f(x) = sum(abs2, x)
+    lower = fill(-5.0, 4)
+    upper = fill(5.0, 4)
+
+    for method in (:nelder_mead, :lbfgs)
+        rng_de = MersenneTwister(314)
+        rng_hybrid = MersenneTwister(314)
+
+        res_de = optimize(f, lower, upper; rng=rng_de, maxiters=60, popsize=24, history=false)
+        res_hybrid = optimize(
+            f,
+            lower,
+            upper;
+            rng=rng_hybrid,
+            maxiters=60,
+            popsize=24,
+            history=false,
+            local_refine=true,
+            local_method=method,
+            local_maxiters=120,
+            local_tol=1e-10,
+        )
+
+        @test res_hybrid.de_best_x == res_de.best_x
+        @test res_hybrid.de_best_f == res_de.best_f
+        @test res_hybrid.best_f <= res_hybrid.de_best_f + 1e-12
+        @test res_hybrid.local_status in (:success, :stopped)
+        @test res_hybrid.total_evaluations == res_hybrid.de_evaluations + res_hybrid.local_evaluations
+        @test res_hybrid.evaluations == res_hybrid.total_evaluations
+        @test res_hybrid.local_evaluations > 0
+        @test isfinite(res_hybrid.elapsed_de_sec)
+        @test isfinite(res_hybrid.elapsed_local_sec)
+        @test isfinite(res_hybrid.elapsed_total_sec)
+    end
+end
+
+@testset "status is final outcome and de_status is DE stop reason" begin
+    f(x) = sum(abs2, x)
+    lower = fill(-5.0, 4)
+    upper = fill(5.0, 4)
+
+    rng_target = MersenneTwister(515)
+    res_target = optimize(
+        f,
+        lower,
+        upper;
+        rng=rng_target,
+        maxiters=1,
+        popsize=20,
+        target=1e-12,
+        history=false,
+        local_refine=true,
+        local_method=:lbfgs,
+        local_maxiters=300,
+        local_tol=1e-12,
+    )
+    @test res_target.de_status == :maxiters
+    @test res_target.status == (res_target.best_f <= 1e-12 ? :target_reached : :not_reached)
+
+    rng_no_target = MersenneTwister(516)
+    res_no_target = optimize(
+        f,
+        lower,
+        upper;
+        rng=rng_no_target,
+        maxiters=5,
+        popsize=20,
+        target=-Inf,
+        history=false,
+    )
+    @test res_no_target.status == :not_reached
+    @test res_no_target.de_status == :maxiters
+end
+
+@testset "local refinement failure falls back to DE result" begin
+    function no_dual_numbers(x)
+        if !(eltype(x) <: AbstractFloat)
+            error("unsupported element type")
+        end
+        return sum(abs2, x)
+    end
+
+    lower = fill(-2.0, 3)
+    upper = fill(2.0, 3)
+    warning_text = mktemp() do _, temp_io
+        res_local = nothing
+        redirect_stderr(temp_io) do
+            rng = MersenneTwister(91)
+            res_local = optimize(
+                no_dual_numbers,
+                lower,
+                upper;
+                rng=rng,
+                maxiters=40,
+                popsize=20,
+                local_refine=true,
+                local_method=:lbfgs,
+                history=false,
+                message=false,
+            )
+        end
+        flush(temp_io)
+        seekstart(temp_io)
+        warning_log = read(temp_io, String)
+        @test occursin("[WARNING] job=0 phase=local_refine", warning_log)
+        res = res_local::Result
+        @test res.local_status == :failed
+        @test res.best_x == res.de_best_x
+        @test res.best_f == res.de_best_f
+        return warning_log
+    end
+
+    @test !isempty(warning_text)
+end
+
+@testset "trace history and settings are recorded" begin
+    f(x) = sum(abs2, x)
+    lower = fill(-3.0, 3)
+    upper = fill(3.0, 3)
+    rng = MersenneTwister(202)
+    res = optimize(
+        f,
+        lower,
+        upper;
+        rng=rng,
+        algorithm=:shade,
+        popsize=12,
+        maxiters=20,
+        history=false,
+        local_refine=true,
+        local_method=:nelder_mead,
+        local_maxiters=50,
+        local_tol=1e-9,
+        trace_history=true,
+        job_id=77,
+    )
+
+    de_rows = filter(trace_row -> trace_row.phase == :de_generation, res.trace)
+    @test length(de_rows) == res.iterations
+    @test all(trace_row.job_id == 77 for trace_row in res.trace)
+    @test all(de_rows[index].generation <= de_rows[index + 1].generation for index in 1:length(de_rows)-1)
+    @test de_rows[end].best_f == res.de_best_f
+    @test de_rows[end].best_x == res.de_best_x
+
+    local_start_index = findfirst(trace_row -> trace_row.phase == :local_start, res.trace)
+    local_end_index = findfirst(trace_row -> trace_row.phase == :local_end, res.trace)
+    @test !isnothing(local_start_index)
+    @test !isnothing(local_end_index)
+    @test res.trace[local_start_index].best_f == res.de_best_f
+    @test res.trace[local_start_index].best_x == res.de_best_x
+    @test res.trace[local_end_index].best_f == res.local_best_f
+    @test res.trace[local_end_index].best_x == res.local_best_x
+    @test res.settings.algorithm == :shade
+    @test res.settings.popsize == 12
+    @test res.settings.local_refine == true
+    @test res.settings.local_method == :nelder_mead
+    @test res.settings.trace_history == true
+    @test res.settings.job_id == 77
+    @test res.settings.message == false
+    @test res.settings.message_every == 1
+end
+
+@testset "trace csv export" begin
+    f(x) = sum(abs2, x)
+    lower = fill(-2.0, 2)
+    upper = fill(2.0, 2)
+    rng = MersenneTwister(303)
+    res = optimize(
+        f,
+        lower,
+        upper;
+        rng=rng,
+        popsize=10,
+        maxiters=12,
+        history=false,
+        trace_history=true,
+        job_id=5,
+    )
+
+    mktempdir() do temp_dir
+        output_path = joinpath(temp_dir, "trace.csv")
+        write_trace_csv(res, output_path)
+        @test isfile(output_path)
+        csv_lines = readlines(output_path)
+        @test length(csv_lines) == length(res.trace) + 1
+        @test startswith(csv_lines[1], "job_id,generation,phase,evaluations,best_f,best_x_1,best_x_2")
+        first_data_cells = split(csv_lines[2], ",")
+        @test parse(Int, first_data_cells[1]) == 5
+        @test first_data_cells[3] == "de_generation"
+    end
+end
+
+@testset "message progress output" begin
+    f(x) = sum(abs2, x)
+    lower = fill(-2.0, 2)
+    upper = fill(2.0, 2)
+
+    message_text = mktemp() do _, temp_io
+        redirect_stdout(temp_io) do
+            rng = MersenneTwister(404)
+            optimize(
+                f,
+                lower,
+                upper;
+                rng=rng,
+                popsize=10,
+                maxiters=6,
+                history=false,
+                local_refine=true,
+                local_method=:nelder_mead,
+                local_maxiters=20,
+                message=true,
+                message_every=2,
+                job_id=11,
+            )
+        end
+        flush(temp_io)
+        seekstart(temp_io)
+        read(temp_io, String)
+    end
+    @test occursin("[DE] job=11 generation=2/6", message_text)
+    @test occursin("[DE] job=11 generation=4/6", message_text)
+    @test occursin("[DE] job=11 generation=6/6", message_text)
+    @test !occursin("[DE] job=11 generation=1/6", message_text)
+    @test occursin("[LOCAL-START] job=11", message_text)
+    @test occursin("[LOCAL-END] job=11", message_text)
+end
+
+@testset "summarize script skips malformed json files" begin
+    mktempdir() do temp_dir
+        valid_payload = Dict(
+            "seed" => 1,
+            "best_f" => 0.1,
+            "status" => "not_reached",
+            "de_status" => "maxiters",
+            "local_status" => "disabled",
+        )
+        open(joinpath(temp_dir, "seed_1.json"), "w") do io
+            JSON3.pretty(io, valid_payload)
+        end
+        write(joinpath(temp_dir, "seed_2.json"), "{not-json")
+
+        project_dir = dirname(dirname(pathof(DifferentialEvolution)))
+        run(
+            `$(Base.julia_cmd()) --project=$project_dir $(joinpath(project_dir, "scripts", "summarize_runs.jl")) --results_dir $temp_dir --top_k 5`,
+        )
+
+        summary_data = JSON3.read(read(joinpath(temp_dir, "summary.json"), String), Dict{String, Any})
+        @test summary_data["num_runs"] == 1
+        @test summary_data["num_skipped_runs"] == 1
+        @test occursin("invalid_json", String(summary_data["skipped_runs"][1]["reason"]))
     end
 end

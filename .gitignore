@@ -1,0 +1,14 @@
+# Generated optimization outputs
+results/
+results_*/
+logs/
+
+# Generated benchmark and plotting artifacts
+reports/benchmarks/**/plots/
+reports/benchmarks/**/*.png
+reports/benchmarks/**/*.svg
+reports/benchmarks/**/*.pdf
+reports/benchmarks/**/*.html
+
+# OS files
+.DS_Store

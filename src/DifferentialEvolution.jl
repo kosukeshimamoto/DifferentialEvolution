@@ -1,10 +1,60 @@
 module DifferentialEvolution
 
-export Result, optimize
+export Result, RunSettings, TraceRecord, optimize, write_trace_csv
 
+using Optim
 using Random
 
 include("internal.jl")
+
+"""
+    TraceRecord{T}
+
+Single trace row for one optimization run.
+
+Fields:
+- `generation::Int`: DE generation index (1-based). Local-phase rows use the next index.
+- `job_id::Int`: user-provided job identifier
+- `phase::Symbol`: `:de_generation`, `:local_start`, or `:local_end`
+- `best_x::Vector{T}`: best parameter vector at this row
+- `best_f::T`: objective value at `best_x`
+- `evaluations::Int`: cumulative objective evaluations at this row
+"""
+struct TraceRecord{T}
+    generation::Int
+    job_id::Int
+    phase::Symbol
+    best_x::Vector{T}
+    best_f::T
+    evaluations::Int
+end
+
+"""
+    RunSettings{T}
+
+Resolved settings used in one optimization run.
+"""
+struct RunSettings{T}
+    algorithm::Symbol
+    popsize::Int
+    maxiters::Int
+    maxevals::Int
+    F::T
+    CR::T
+    memory_size::Int
+    pmax::T
+    target::T
+    history::Bool
+    parallel::Bool
+    local_refine::Bool
+    local_method::Symbol
+    local_maxiters::Int
+    local_tol::T
+    trace_history::Bool
+    job_id::Int
+    message::Bool
+    message_every::Int
+end
 
 """
     Result{T}
@@ -14,22 +64,95 @@ Optimization result returned by `optimize`.
 Fields:
 - `best_x::Vector{T}`: best solution vector
 - `best_f::T`: objective value at `best_x`
-- `status::Symbol`: `:target_reached`, `:maxiters`, `:maxevals`, or `:stopped`
-- `evaluations::Int`: number of objective evaluations
+- `status::Symbol`: final outcome, `:target_reached` or `:not_reached`
+- `de_status::Symbol`: DE-phase stop reason, `:target_reached`, `:maxiters`, `:maxevals`, or `:stopped`
+- `evaluations::Int`: total number of objective evaluations (DE + local if enabled)
 - `iterations::Int`: number of iterations executed
 - `history::Vector{T}`: best objective value after each iteration (empty if disabled)
+- `de_best_x::Vector{T}` / `de_best_f::T`: best solution and objective from DE phase
+- `local_best_x::Vector{T}` / `local_best_f::T`: best solution and objective from local phase
+- `local_status::Symbol`: `:disabled`, `:success`, `:failed`, or `:stopped`
+- `de_evaluations::Int`: number of DE objective evaluations
+- `local_evaluations::Int`: number of local-phase objective evaluations
+- `total_evaluations::Int`: `de_evaluations + local_evaluations`
+- `elapsed_de_sec::Float64`: elapsed DE time in seconds
+- `elapsed_local_sec::Float64`: elapsed local-phase time in seconds
+- `elapsed_total_sec::Float64`: total elapsed time in seconds
+- `settings::RunSettings{T}`: resolved run settings
+- `trace::Vector{TraceRecord{T}}`: per-generation and local-phase trace rows
 """
 struct Result{T}
     best_x::Vector{T}
     best_f::T
     status::Symbol
+    de_status::Symbol
     evaluations::Int
     iterations::Int
     history::Vector{T}
+    de_best_x::Vector{T}
+    de_best_f::T
+    local_best_x::Vector{T}
+    local_best_f::T
+    local_status::Symbol
+    de_evaluations::Int
+    local_evaluations::Int
+    total_evaluations::Int
+    elapsed_de_sec::Float64
+    elapsed_local_sec::Float64
+    elapsed_total_sec::Float64
+    settings::RunSettings{T}
+    trace::Vector{TraceRecord{T}}
+end
+
+function Result(best_x::Vector{T}, best_f::T, de_status::Symbol, evaluations::Int, iterations::Int, history::Vector{T}) where {T}
+    status = de_status == :target_reached ? :target_reached : :not_reached
+    default_settings = RunSettings(
+        :de,
+        0,
+        iterations,
+        evaluations,
+        zero(T),
+        zero(T),
+        0,
+        zero(T),
+        zero(T),
+        !isempty(history),
+        false,
+        false,
+        :nelder_mead,
+        0,
+        zero(T),
+        false,
+        0,
+        false,
+        1,
+    )
+    return Result(
+        best_x,
+        best_f,
+        status,
+        de_status,
+        evaluations,
+        iterations,
+        history,
+        copy(best_x),
+        best_f,
+        copy(best_x),
+        best_f,
+        :disabled,
+        evaluations,
+        0,
+        evaluations,
+        NaN,
+        0.0,
+        NaN,
+        default_settings,
+        TraceRecord{T}[],
+    )
 end
 
 """
-    optimize(f, lower, upper; rng, algorithm, popsize, maxiters, maxevals, F, CR, memory_size, pmax, target, history, parallel)
+    optimize(f, lower, upper; rng, algorithm, popsize, maxiters, maxevals, F, CR, memory_size, pmax, target, history, parallel, local_refine, local_method, local_maxiters, local_tol, trace_history, job_id, message, message_every)
 
 Minimize `f` over a box defined by `lower` and `upper`.
 `rng` is required and controls all randomness.
@@ -37,6 +160,15 @@ Minimize `f` over a box defined by `lower` and `upper`.
 If `parallel=true`, trials are generated and evaluated in parallel across threads
 using a generation-synchronous update. Results can differ from the default
 asynchronous update, but remain reproducible for deterministic `f`.
+
+If `local_refine=true`, a local optimization phase is started from the DE best
+solution. `local_method` selects `:nelder_mead` or `:lbfgs`. If local
+optimization fails, the DE best solution is returned safely.
+
+If `trace_history=true`, per-generation best records are stored in `result.trace`
+and can be exported with `write_trace_csv`.
+
+If `message=true`, progress is printed during optimization.
 """
 function optimize(
     f,
@@ -54,7 +186,22 @@ function optimize(
     target::Real = -Inf,
     history::Bool = true,
     parallel::Bool = false,
+    local_refine::Bool = false,
+    local_method::Symbol = :nelder_mead,
+    local_maxiters::Int = 200,
+    local_tol::Real = 1e-8,
+    trace_history::Bool = false,
+    job_id::Int = 0,
+    message::Bool = false,
+    message_every::Int = 1,
 )
+    total_start_ns = time_ns()
+    if isempty(lower) || isempty(upper)
+        throw(ArgumentError("lower and upper must be non-empty"))
+    end
+    if length(lower) != length(upper)
+        throw(ArgumentError("lower and upper must have the same length"))
+    end
     dim = length(lower)
     if isnothing(popsize)
         if algorithm == :jso
@@ -65,7 +212,23 @@ function optimize(
     end
     maxevals = isnothing(maxevals) ? popsize * (maxiters + 1) : maxevals
 
-    _validate_inputs(lower, upper, popsize, maxiters, maxevals, F, CR, algorithm, memory_size, pmax)
+    _validate_inputs(
+        lower,
+        upper,
+        popsize,
+        maxiters,
+        maxevals,
+        F,
+        CR,
+        algorithm,
+        memory_size,
+        pmax,
+        target,
+        local_method,
+        local_maxiters,
+        local_tol,
+        message_every,
+    )
 
     T = promote_type(Float64, eltype(lower), eltype(upper), typeof(F), typeof(CR), typeof(target))
     lower_t = Vector{T}(lower)
@@ -74,6 +237,7 @@ function optimize(
     CR_t = T(CR)
     pmax_t = T(pmax)
     target_t = T(target)
+    local_tol_t = T(local_tol)
     if isnothing(memory_size)
         memory_size = algorithm == :jso ? 5 : popsize
     end
@@ -86,7 +250,16 @@ function optimize(
         for j in 1:dim
             pop[j, i] = lower_t[j] + rand(rng, T) * (upper_t[j] - lower_t[j])
         end
-        fitness[i] = T(f(view(pop, :, i)))
+        fitness[i] = _objective_value_or_inf(
+            f,
+            view(pop, :, i),
+            T,
+            message,
+            job_id,
+            :initialization,
+            i,
+            i,
+        )
     end
 
     strategy = if algorithm == :de
@@ -99,6 +272,8 @@ function optimize(
         _make_jso_state(T, popsize, memory_size, pmax_t, maxevals, maxiters)
     end
 
+    de_start_ns = time_ns()
+    trace_rows = trace_history ? NamedTuple[] : nothing
     best_x, best_f, evaluations, iterations, history_best = _run_evolution!(
         f,
         pop,
@@ -113,9 +288,14 @@ function optimize(
         target_t,
         history,
         parallel,
+        trace_rows,
+        job_id,
+        message,
+        message_every,
     )
+    elapsed_de_sec = (time_ns() - de_start_ns) / 1e9
 
-    status = if best_f <= target_t
+    de_status = if best_f <= target_t
         :target_reached
     elseif iterations >= maxiters
         :maxiters
@@ -125,7 +305,195 @@ function optimize(
         :stopped
     end
 
-    return Result(best_x, best_f, status, evaluations, iterations, history_best)
+    de_best_x = copy(best_x)
+    de_best_f = best_f
+    de_evaluations = evaluations
+    trace = TraceRecord{T}[]
+    if trace_history
+        for trace_row in trace_rows
+            push!(
+                trace,
+                TraceRecord{T}(
+                    trace_row.generation,
+                    trace_row.job_id,
+                    trace_row.phase,
+                    trace_row.best_x,
+                    trace_row.best_f,
+                    trace_row.evaluations,
+                ),
+            )
+        end
+    end
+    local_best_x = copy(de_best_x)
+    local_best_f = de_best_f
+    local_status = :disabled
+    local_evaluations = 0
+    elapsed_local_sec = 0.0
+
+    if local_refine
+        if message
+            println(
+                "[LOCAL-START] job=",
+                job_id,
+                " generation=",
+                iterations + 1,
+                " evaluations=",
+                de_evaluations,
+                " method=",
+                local_method,
+                " de_best_f=",
+                de_best_f,
+                " de_best_x=",
+                de_best_x,
+            )
+        end
+        if trace_history
+            push!(
+                trace,
+                TraceRecord{T}(
+                    iterations + 1,
+                    job_id,
+                    :local_start,
+                    copy(de_best_x),
+                    de_best_f,
+                    de_evaluations,
+                ),
+            )
+        end
+        local_best_x, local_best_f, local_status, local_evaluations, elapsed_local_sec = _run_local_refinement(
+            f,
+            de_best_x,
+            de_best_f,
+            lower_t,
+            upper_t,
+            local_method,
+            local_maxiters,
+            local_tol,
+            job_id,
+            de_evaluations,
+        )
+        if trace_history
+            push!(
+                trace,
+                TraceRecord{T}(
+                    iterations + 1,
+                    job_id,
+                    :local_end,
+                    copy(local_best_x),
+                    local_best_f,
+                    de_evaluations + local_evaluations,
+                ),
+            )
+        end
+        if message
+            println(
+                "[LOCAL-END] job=",
+                job_id,
+                " generation=",
+                iterations + 1,
+                " evaluations=",
+                de_evaluations + local_evaluations,
+                " status=",
+                local_status,
+                " local_best_f=",
+                local_best_f,
+                " local_best_x=",
+                local_best_x,
+            )
+        end
+        if local_best_f < de_best_f
+            best_x = copy(local_best_x)
+            best_f = local_best_f
+        else
+            best_x = copy(de_best_x)
+            best_f = de_best_f
+        end
+    end
+
+    total_evaluations = de_evaluations + local_evaluations
+    elapsed_total_sec = (time_ns() - total_start_ns) / 1e9
+    status = best_f <= target_t ? :target_reached : :not_reached
+    run_settings = RunSettings(
+        algorithm,
+        popsize,
+        maxiters,
+        maxevals,
+        F_t,
+        CR_t,
+        memory_size,
+        pmax_t,
+        target_t,
+        history,
+        parallel,
+        local_refine,
+        local_method,
+        local_maxiters,
+        local_tol_t,
+        trace_history,
+        job_id,
+        message,
+        message_every,
+    )
+    return Result(
+        best_x,
+        best_f,
+        status,
+        de_status,
+        total_evaluations,
+        iterations,
+        history_best,
+        de_best_x,
+        de_best_f,
+        local_best_x,
+        local_best_f,
+        local_status,
+        de_evaluations,
+        local_evaluations,
+        total_evaluations,
+        elapsed_de_sec,
+        elapsed_local_sec,
+        elapsed_total_sec,
+        run_settings,
+        trace,
+    )
+end
+
+"""
+    write_trace_csv(result, output_path)
+
+Write `result.trace` to a CSV file.
+Columns:
+- `job_id,generation,phase,evaluations,best_f`
+- `best_x_1 ... best_x_D`
+"""
+function write_trace_csv(result::Result{T}, output_path::AbstractString) where {T}
+    dimension = isempty(result.trace) ? length(result.best_x) : length(result.trace[1].best_x)
+    open(output_path, "w") do io
+        print(io, "job_id,generation,phase,evaluations,best_f")
+        for dimension_index in 1:dimension
+            print(io, ",best_x_", dimension_index)
+        end
+        print(io, "\n")
+        for trace_row in result.trace
+            print(
+                io,
+                trace_row.job_id,
+                ",",
+                trace_row.generation,
+                ",",
+                trace_row.phase,
+                ",",
+                trace_row.evaluations,
+                ",",
+                trace_row.best_f,
+            )
+            for parameter_value in trace_row.best_x
+                print(io, ",", parameter_value)
+            end
+            print(io, "\n")
+        end
+    end
+    return output_path
 end
 
 end # module

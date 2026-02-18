@@ -1,9 +1,3 @@
-using Pkg
-
-Pkg.activate(; temp=true)
-Pkg.develop(path=pwd())
-Pkg.add(["Optim", "Plots"])
-
 ENV["GKSwstype"] = "100"
 
 using DifferentialEvolution

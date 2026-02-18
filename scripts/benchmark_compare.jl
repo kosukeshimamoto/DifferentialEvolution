@@ -1,9 +1,3 @@
-using Pkg
-
-Pkg.activate(; temp=true)
-Pkg.develop(path=pwd())
-Pkg.add(["Optim"])
-
 using DifferentialEvolution
 using Optim
 using Random

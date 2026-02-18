@@ -1,8 +1,3 @@
-using Pkg
-
-Pkg.activate(; temp=true)
-Pkg.develop(path=pwd())
-
 using DifferentialEvolution
 using Random
 using Statistics
