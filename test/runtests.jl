@@ -665,7 +665,7 @@ end
     @test res_no_target.de_status == :maxiters
 end
 
-@testset "local refinement failure falls back to DE result" begin
+@testset "local refinement lbfgs falls back to finite diff" begin
     function no_dual_numbers(x)
         if !(eltype(x) <: AbstractFloat)
             error("unsupported element type")
@@ -695,11 +695,11 @@ end
         flush(temp_io)
         seekstart(temp_io)
         warning_log = read(temp_io, String)
-        @test occursin("[WARNING] job=0 phase=local_refine", warning_log)
+        @test occursin("lbfgs autodiff=:forward failed; retrying autodiff=:finite", warning_log)
         res = res_local::Result
-        @test res.local_status == :failed
-        @test res.best_x == res.de_best_x
-        @test res.best_f == res.de_best_f
+        @test res.local_status in (:success, :stopped)
+        @test res.best_f <= res.de_best_f + 1e-12
+        @test res.local_evaluations > 0
         return warning_log
     end
 

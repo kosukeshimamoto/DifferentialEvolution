@@ -974,6 +974,70 @@ function _local_inner_method(local_method::Symbol)
     return Optim.LBFGS()
 end
 
+function _extract_real_value(value)
+    if value isa Real
+        return value
+    end
+    if hasproperty(value, :value)
+        return _extract_real_value(getproperty(value, :value))
+    end
+    throw(ArgumentError("Objective value type cannot be converted to Real"))
+end
+
+function _convert_objective_value(value, ::Type{T}) where {T}
+    try
+        return T(value)
+    catch
+        return T(_extract_real_value(value))
+    end
+end
+
+function _run_lbfgs_with_fallback(
+    bounded_objective,
+    lower_t,
+    upper_t,
+    de_best_x,
+    local_options,
+    job_id,
+    de_evaluations,
+    objective_calls,
+)
+    try
+        return Optim.optimize(
+            bounded_objective,
+            lower_t,
+            upper_t,
+            de_best_x,
+            Optim.Fminbox(Optim.LBFGS()),
+            local_options;
+            autodiff=:forward,
+        )
+    catch local_error
+        println(
+            stderr,
+            "[WARNING] job=",
+            job_id,
+            " phase=local_refine",
+            " evaluations=",
+            de_evaluations + objective_calls[],
+            " lbfgs autodiff=:forward failed; retrying autodiff=:finite.",
+            " error=",
+            typeof(local_error),
+            " message=",
+            local_error,
+        )
+        return Optim.optimize(
+            bounded_objective,
+            lower_t,
+            upper_t,
+            de_best_x,
+            Optim.Fminbox(Optim.LBFGS()),
+            local_options;
+            autodiff=:finite,
+        )
+    end
+end
+
 function _run_local_refinement(
     f,
     de_best_x,
@@ -1014,14 +1078,15 @@ function _run_local_refinement(
     local_result = nothing
     try
         if local_method == :lbfgs
-            local_result = Optim.optimize(
+            local_result = _run_lbfgs_with_fallback(
                 bounded_objective,
                 lower_t,
                 upper_t,
                 de_best_x,
-                Optim.Fminbox(_local_inner_method(local_method)),
-                local_options;
-                autodiff=:forward,
+                local_options,
+                job_id,
+                de_evaluations,
+                objective_calls,
             )
         else
             local_result = Optim.optimize(
@@ -1034,7 +1099,7 @@ function _run_local_refinement(
             )
         end
         local_best_x = Vector{T}(Optim.minimizer(local_result))
-        local_best_f = T(Optim.minimum(local_result))
+        local_best_f = _convert_objective_value(Optim.minimum(local_result), T)
         if isfinite(local_best_f)
             local_status = Optim.converged(local_result) ? :success : :stopped
         else
