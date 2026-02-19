@@ -2,7 +2,7 @@ cff-version: 1.2.0
 title: DifferentialEvolution.jl
 message: If you use this software, please cite it as below.
 authors:
-  - name: Kosuke
+  - name: Kosuke Shimamoto
 version: 0.1.0
 date-released: 2026-01-28
 license: MIT
