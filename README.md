@@ -43,6 +43,29 @@ rng = MersenneTwister(42)
 res_jso = optimize(f, lower, upper; rng=rng, algorithm=:jso, maxiters=200, pmax=0.25)
 ```
 
+## 2D animation gallery
+
+Grouped by objective function (2D).  
+Algorithms shown: `BFGS`, `Nelder-Mead`, `DE`, `SHADE`.
+
+### Sphere
+
+| BFGS | Nelder-Mead | DE | SHADE |
+| --- | --- | --- | --- |
+| ![Sphere BFGS](reports/2d/2d_sphere_bfgs.gif) | ![Sphere Nelder-Mead](reports/2d/2d_sphere_nelder_mead.gif) | ![Sphere DE](reports/2d/2d_sphere_de.gif) | ![Sphere SHADE](reports/2d/2d_sphere_shade.gif) |
+
+### Rastrigin
+
+| BFGS | Nelder-Mead | DE | SHADE |
+| --- | --- | --- | --- |
+| ![Rastrigin BFGS](reports/2d/2d_rastrigin_bfgs.gif) | ![Rastrigin Nelder-Mead](reports/2d/2d_rastrigin_nelder_mead.gif) | ![Rastrigin DE](reports/2d/2d_rastrigin_de.gif) | ![Rastrigin SHADE](reports/2d/2d_rastrigin_shade.gif) |
+
+### Schwefel
+
+| BFGS | Nelder-Mead | DE | SHADE |
+| --- | --- | --- | --- |
+| ![Schwefel BFGS](reports/2d/2d_schwefel_bfgs.gif) | ![Schwefel Nelder-Mead](reports/2d/2d_schwefel_nelder_mead.gif) | ![Schwefel DE](reports/2d/2d_schwefel_de.gif) | ![Schwefel SHADE](reports/2d/2d_schwefel_shade.gif) |
+
 ## API
 
 ```
