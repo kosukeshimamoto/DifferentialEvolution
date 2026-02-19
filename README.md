@@ -112,15 +112,9 @@ Return value `Result` fields:
 - `settings`: resolved run settings used for this run
 - `trace`: list of `TraceRecord` rows (`generation`, `job_id`, `phase`, `best_x`, `best_f`, `evaluations`)
 
-## Migration note
-
-`status` now represents the final outcome after the full run (DE + optional local refinement):
-
-- `:target_reached` or `:not_reached`
-
-If you previously interpreted `status` as the DE loop stop reason, use `de_status` instead:
-
-- `:target_reached`, `:maxiters`, `:maxevals`, or `:stopped`
+Compatibility note:
+- `status` represents the final outcome after the full run (`:target_reached` or `:not_reached`).
+- Use `de_status` for the DE-loop stop reason (`:target_reached`, `:maxiters`, `:maxevals`, or `:stopped`).
 
 ## Reproducibility
 
@@ -138,7 +132,36 @@ res2 = optimize(f, lower, upper; rng=rng2, maxiters=100)
 @assert res1.best_f == res2.best_f
 ```
 
-## Hybrid refinement example
+## Parallel DE inside one run
+
+Use `parallel=true` to evaluate one generation across threads.
+
+- Update rule: generation-synchronous (all trials are created from the same parent population).
+- Best use case: expensive deterministic objective evaluations.
+- Reproducibility: same seed gives reproducible results when `f` is deterministic.
+- Parallel mode can produce a different trajectory from serial mode (`parallel=false`) because parent updates are synchronized per generation.
+
+```bash
+JULIA_NUM_THREADS=8 julia --project=. -e '
+using DifferentialEvolution, Random
+f(x) = sum(abs2, x)
+lower = fill(-5.0, 20)
+upper = fill(5.0, 20)
+rng = MersenneTwister(42)
+res = optimize(f, lower, upper; rng=rng, parallel=true, maxevals=200000)
+@show res.best_f res.status res.de_status
+'
+```
+
+## Hybrid refinement (DE -> local)
+
+When `local_refine=true`, local optimization starts from `de_best_x` after DE ends.
+
+- `local_method=:lbfgs`: smooth objectives where gradients (autodiff) are usable.
+- `local_method=:nelder_mead`: noisy or non-smooth objectives.
+- Box bounds are respected through `Fminbox`.
+- Safety rule: if local optimization fails, DE result is kept.
+- Final selection: `best_f = min(de_best_f, local_best_f)`.
 
 ```julia
 rng = MersenneTwister(42)
@@ -158,6 +181,8 @@ res_hybrid = optimize(
 @show res_hybrid.de_best_f
 @show res_hybrid.local_best_f
 @show res_hybrid.best_f
+@show res_hybrid.status
+@show res_hybrid.de_status
 @show res_hybrid.local_status
 ```
 
@@ -183,41 +208,53 @@ res_trace = optimize(
 write_trace_csv(res_trace, "results/seed_42_trace.csv")
 ```
 
-## Multi-seed runs (job array style)
+## Multi-seed runs and job arrays
 
-Single seed run (JSON output to `results/seed_<seed>.json`):
+`scripts/run_de.jl` uses `LOCAL_REFINE=false` by default (same as the library API default).
 
 ```bash
 SEED=12 JULIA_NUM_THREADS=4 julia --project=. scripts/run_de.jl
 ```
 
-`scripts/run_de.jl` uses `LOCAL_REFINE=false` by default (same as the library API default).
-
-With runtime settings:
+Recommended flow:
 
 ```bash
+# 1) Run one seed (1 job = 1 seed = 1 run)
 SEED=12 OBJECTIVE=rastrigin DIM=20 ALGORITHM=shade MAXEVALS=200000 LOCAL_REFINE=true LOCAL_METHOD=nelder_mead julia --project=. scripts/run_de.jl
 
-# Also write per-generation trace CSV:
+# 2) Optionally save per-generation trace CSV
 SEED=12 TRACE_CSV=true julia --project=. scripts/run_de.jl
 
-# Also print progress every 10 generations:
+# 3) Optionally print progress every 10 generations
 SEED=12 MESSAGE=true MESSAGE_EVERY=10 julia --project=. scripts/run_de.jl
-```
 
-Aggregate all seed outputs:
-
-```bash
+# 4) Aggregate all runs
 julia --project=. scripts/summarize_runs.jl --results_dir results --top_k 10
 ```
 
-If some run files have malformed JSON, missing fields, or invalid/non-finite `best_f`, they are skipped and listed in `summary.json` under `skipped_runs`.
+Output files:
+- `results/seed_<seed>.json`: one run result (best values, statuses, evaluations, timings, settings).
+- `results/seed_<seed>_trace.csv`: optional trace (`TRACE_CSV=true`).
+- `results/summary.json`: aggregate report (`best_seed`, `top_k`, summary stats, skipped files).
 
-Slurm template:
+Aggregation behavior:
+- Malformed JSON, missing required fields, or invalid/non-finite `best_f` rows are skipped.
+- Skipped rows are reported as warnings and recorded in `summary.json` under `skipped_runs`.
+
+Slurm job array example:
 
 ```bash
 sbatch --array=1-100%20 slurm/de_array.sbatch
 ```
+
+The template maps `SLURM_ARRAY_TASK_ID` to `SEED` and writes results under `RESULTS_DIR`.
+
+## Troubleshooting
+
+- First run is slow: Julia package precompilation can dominate first execution.
+- `status` vs `de_status`: use `status` for final success and `de_status` for DE stop reason.
+- Local refinement failed: check `local_status`; the result safely falls back to DE best.
+- Aggregation warnings: inspect `summary.json -> skipped_runs` to see invalid files and reasons.
 
 ## References
 
