@@ -88,6 +88,52 @@ Algorithms shown: `BFGS`, `Nelder-Mead`, `DE`, `SHADE`.
 | --- | --- |
 | ![Schwefel DE](reports/2d/2d_schwefel_de.gif) | ![Schwefel SHADE](reports/2d/2d_schwefel_shade.gif) |
 
+## Algorithm ideas (DE, SHADE, L-SHADE)
+
+### DE (Differential Evolution)
+
+Core idea:
+- Keep a population of candidate solutions.
+- Create a trial vector by combining individuals with differential mutation.
+- Keep the better one between parent and trial.
+
+Algorithm steps:
+1. Initialize population  
+   Sample `NP` vectors uniformly inside bounds.
+2. Mutation (DE/rand/1)  
+   For target `x_i`, pick `r1, r2, r3` (all distinct, different from `i`) and build
+   `v_i = x_r1 + F * (x_r2 - x_r3)`.
+3. Binomial crossover + bound handling  
+   Build trial `u_i` from `x_i` and `v_i` with probability `CR` (plus one forced donor dimension),
+   then clip each dimension to `[lower, upper]`.
+4. Selection  
+   If `f(u_i) <= f(x_i)`, replace `x_i` with `u_i`; otherwise keep `x_i`.
+   Repeat until `target`, `maxiters`, or `maxevals` is reached.
+
+### SHADE
+
+1. DE problem  
+   Fixed `F` and `CR` are often sensitive to the objective and search stage.
+2. Solution idea  
+   Adapt `F` and `CR` online using only successful trials (success-history adaptation),
+   and guide mutation toward p-best solutions while keeping diversity with an archive.
+3. Algorithm changes  
+   - Sample `CR` from memory (`MCR`) with Gaussian perturbation and clamp to `[0, 1]`.
+   - Sample `F` from memory (`MF`) with Cauchy perturbation, resample while `F <= 0`, cap at `1`.
+   - Use current-to-pbest/1 mutation with archive support.
+   - Update memory from successful parameters with fitness-improvement weights.
+
+### L-SHADE
+
+1. DE/SHADE problem  
+   A fixed population size is inefficient: large populations help early exploration but can slow late-stage convergence.
+2. Solution idea  
+   Keep SHADE adaptation and shrink the population linearly as evaluations progress.
+3. Algorithm changes  
+   - Apply linear population size reduction from initial `popsize` to minimum size `4` by evaluation budget.
+   - After shrinking, keep the best individuals and trim archive size to the new population size.
+   - Keep SHADE-style success-history parameter adaptation during the run.
+
 ## API
 
 ```
@@ -306,8 +352,8 @@ The template maps `SLURM_ARRAY_TASK_ID` to `SEED` and writes results under `RESU
 Source papers are referenced by link (PDF files are not bundled in this repository).
 
 - R. Storn and K. Price (1997), *Differential Evolution - A Simple and Efficient Heuristic for global Optimization over Continuous Spaces*: <https://doi.org/10.1023/A:1008202821328>
-- R. Tanabe and A. Fukunaga (2013), *Evaluating the performance of SHADE on CEC 2013 benchmark problems*: <https://scholar.google.com/scholar?q=Evaluating+the+performance+of+SHADE+on+CEC+2013+benchmark+problems>
-- R. Tanabe and A. Fukunaga (2014), *Improving the search performance of SHADE using linear population size reduction*: <https://scholar.google.com/scholar?q=Improving+the+search+performance+of+SHADE+using+linear+population+size+reduction>
-- J. Brest et al. (2017), *Single objective real-parameter optimization: Algorithm jSO*: <https://scholar.google.com/scholar?q=Single+objective+real-parameter+optimization+Algorithm+jSO>
-- B. Zamuda et al. (2017), *Adaptive constraint handling and Success History Differential Evolution for CEC 2017*: <https://scholar.google.com/scholar?q=Adaptive+constraint+handling+and+Success+History+Differential+Evolution+for+CEC+2017+Constrained+Real-Parameter+Optimization>
-- M. Viktorin et al. (2019), *Distance based parameter adaptation for Success-History based Differential Evolution*: <https://scholar.google.com/scholar?q=Distance+based+parameter+adaptation+for+Success-History+based+Differential+Evolution>
+- R. Tanabe and A. Fukunaga (2013), *Evaluating the performance of SHADE on CEC 2013 benchmark problems*: <https://doi.org/10.1109/CEC.2013.6557798>
+- R. Tanabe and A. Fukunaga (2014), *Improving the search performance of SHADE using linear population size reduction*: <https://doi.org/10.1109/CEC.2014.6900380>
+- J. Brest et al. (2017), *Single objective real-parameter optimization: Algorithm jSO*: <https://doi.org/10.1109/CEC.2017.7969456>
+- B. Zamuda et al. (2017), *Adaptive constraint handling and Success History Differential Evolution for CEC 2017*: <https://doi.org/10.1109/CEC.2017.7969601>
+- M. Viktorin et al. (2019), *Distance based parameter adaptation for Success-History based Differential Evolution*: <https://doi.org/10.1016/j.swevo.2018.10.013>
