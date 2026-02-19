@@ -140,8 +140,18 @@ function current_point(state)
         return getproperty(state, :x_lowest)
     elseif hasproperty(state, :x)
         return getproperty(state, :x)
-    elseif hasproperty(state, :metadata) && haskey(state.metadata, "x")
-        return state.metadata["x"]
+    elseif hasproperty(state, :metadata)
+        metadata = getproperty(state, :metadata)
+        if haskey(metadata, "x")
+            return metadata["x"]
+        elseif haskey(metadata, :x)
+            return metadata[:x]
+        elseif haskey(metadata, "centroid")
+            return metadata["centroid"]
+        elseif haskey(metadata, :centroid)
+            return metadata[:centroid]
+        end
+        return nothing
     else
         return nothing
     end
@@ -150,6 +160,7 @@ end
 function optim_trace(f, x0, method, lower, upper; maxiters, maxevals)
     points = NTuple{2, Float64}[]
     simplex_history = Vector{NTuple{2, Float64}}[]
+    trace_simplex = method isa Optim.NelderMead
     function fcount(x)
         return f(x)
     end
@@ -159,9 +170,14 @@ function optim_trace(f, x0, method, lower, upper; maxiters, maxevals)
             xc = clamp.(x, lower, upper)
             push!(points, (xc[1], xc[2]))
         end
-        if hasproperty(state, :simplex)
+        if hasproperty(state, :metadata) && (
+            haskey(getproperty(state, :metadata), "simplex") ||
+            haskey(getproperty(state, :metadata), :simplex)
+        )
+            metadata = getproperty(state, :metadata)
+            simplex = haskey(metadata, "simplex") ? metadata["simplex"] : metadata[:simplex]
             verts = NTuple{2, Float64}[]
-            for v in getproperty(state, :simplex)
+            for v in simplex
                 vc = clamp.(v, lower, upper)
                 push!(verts, (vc[1], vc[2]))
             end
@@ -180,6 +196,8 @@ function optim_trace(f, x0, method, lower, upper; maxiters, maxevals)
         g_abstol=0.0,
         successive_f_tol=0,
         store_trace=false,
+        extended_trace=true,
+        trace_simplex=trace_simplex,
         show_trace=false,
         show_warnings=false,
         callback=callback,
@@ -200,7 +218,7 @@ function grid_values(fxy, xs, ys; zmax)
     return log10.(Z .+ 1.0)
 end
 
-function plot_background(xs, ys, Zlog, title_str, lower, upper, legend_pos)
+function plot_background(xs, ys, Zlog, lower, upper, legend_pos)
     plt = contourf(
         xs,
         ys,
@@ -210,7 +228,7 @@ function plot_background(xs, ys, Zlog, title_str, lower, upper, legend_pos)
         colorbar=false,
         xlabel="",
         ylabel="",
-        title=title_str,
+        title="",
         aspect_ratio=:equal,
         legend=legend_pos,
         framestyle=:box,
@@ -221,6 +239,9 @@ function plot_background(xs, ys, Zlog, title_str, lower, upper, legend_pos)
         grid=false,
         xlims=(lower[1], upper[1]),
         ylims=(lower[2], upper[2]),
+        widen=false,
+        size=(520, 520),
+        dpi=120,
     )
     bx = [lower[1], upper[1], upper[1], lower[1], lower[1]]
     by = [lower[2], lower[2], upper[2], upper[2], lower[2]]
@@ -228,9 +249,9 @@ function plot_background(xs, ys, Zlog, title_str, lower, upper, legend_pos)
     return plt
 end
 
-function animate_population(name, label, xs, ys, Zlog, pop_history, best_history, optimum, outpath, lower, upper, legend_pos)
+function animate_population(xs, ys, Zlog, pop_history, best_history, optimum, outpath, lower, upper, legend_pos)
     anim = @animate for t in 1:length(pop_history)
-        plt = plot_background(xs, ys, Zlog, name * " (" * label * ")", lower, upper, legend_pos)
+        plt = plot_background(xs, ys, Zlog, lower, upper, legend_pos)
         pop = pop_history[t]
         scatter!(plt, pop[1, :], pop[2, :], markersize=3, color=:black, alpha=0.5, label="population")
         bx = [p[1] for p in best_history[1:t]]
@@ -259,9 +280,26 @@ function animate_population(name, label, xs, ys, Zlog, pop_history, best_history
     gif(anim, outpath; fps=10, loop=0)
 end
 
-function animate_path(name, xs, ys, Zlog, path, optimum, outpath, lower, upper, legend_pos)
+function animate_path(xs, ys, Zlog, path, optimum, outpath, lower, upper, legend_pos)
+    if isempty(path)
+        anim = @animate for _ in 1:1
+            plt = plot_background(xs, ys, Zlog, lower, upper, legend_pos)
+            scatter!(
+                plt,
+                [optimum[1]],
+                [optimum[2]],
+                marker=:diamond,
+                color=:white,
+                markerstrokecolor=:black,
+                markersize=7,
+                label="true",
+            )
+        end
+        gif(anim, outpath; fps=1, loop=0)
+        return
+    end
     anim = @animate for t in 1:length(path)
-        plt = plot_background(xs, ys, Zlog, name, lower, upper, legend_pos)
+        plt = plot_background(xs, ys, Zlog, lower, upper, legend_pos)
         px = [p[1] for p in path[1:t]]
         py = [p[2] for p in path[1:t]]
         plot!(plt, px, py, color=:cyan, linewidth=2, label="path")
@@ -288,9 +326,40 @@ function animate_path(name, xs, ys, Zlog, path, optimum, outpath, lower, upper, 
     gif(anim, outpath; fps=10, loop=0)
 end
 
-function animate_simplex(name, xs, ys, Zlog, simplex_history, path, optimum, outpath, lower, upper, legend_pos)
+function animate_simplex(xs, ys, Zlog, simplex_history, path, optimum, outpath, lower, upper, legend_pos)
+    if isempty(simplex_history)
+        anim = @animate for _ in 1:1
+            plt = plot_background(xs, ys, Zlog, lower, upper, legend_pos)
+            if !isempty(path)
+                px = [p[1] for p in path]
+                py = [p[2] for p in path]
+                plot!(plt, px, py, color=:cyan, linewidth=2, label="path")
+                scatter!(
+                    plt,
+                    [px[end]],
+                    [py[end]],
+                    color=:white,
+                    markerstrokecolor=:cyan,
+                    markersize=6,
+                    label="",
+                )
+            end
+            scatter!(
+                plt,
+                [optimum[1]],
+                [optimum[2]],
+                marker=:diamond,
+                color=:white,
+                markerstrokecolor=:black,
+                markersize=7,
+                label="true",
+            )
+        end
+        gif(anim, outpath; fps=1, loop=0)
+        return
+    end
     anim = @animate for t in 1:length(simplex_history)
-        plt = plot_background(xs, ys, Zlog, name, lower, upper, legend_pos)
+        plt = plot_background(xs, ys, Zlog, lower, upper, legend_pos)
         verts = simplex_history[t]
         sx = [v[1] for v in verts]
         sy = [v[2] for v in verts]
@@ -407,7 +476,7 @@ for (name, fvec, fxy, lower, upper, optimum, zmax, params) in configs
     Zlog = grid_values(fxy, xs, ys; zmax=zmax)
     legend_pos = name == "Schwefel" ? :bottomleft : :topright
 
-    for (label, alg, slug) in (("DE", :de, "de"), ("SHADE", :shade, "shade"), ("L-SHADE", :lshade, "lshade"), ("JSO", :jso, "jso"))
+    for (alg, slug) in ((:de, "de"), (:shade, "shade"), (:lshade, "lshade"), (:jso, "jso"))
         pop_hist, best_hist = trace_evolution(
             fvec,
             lower,
@@ -421,20 +490,20 @@ for (name, fvec, fxy, lower, upper, optimum, zmax, params) in configs
             CR=params.CR,
         )
         outpath = joinpath(outdir, "2d_" * lowercase(name) * "_" * slug * ".gif")
-        animate_population(name, label, xs, ys, Zlog, pop_hist, best_hist, optimum, outpath, lower, upper, legend_pos)
+        animate_population(xs, ys, Zlog, pop_hist, best_hist, optimum, outpath, lower, upper, legend_pos)
     end
 
     # Nelder-Mead animation
     x0 = make_x0(lower, upper, seed)
     nm_path, nm_simplex = optim_trace(fvec, x0, Optim.NelderMead(), lower, upper; maxiters=maxiters, maxevals=maxevals)
     nm_out = joinpath(outdir, "2d_" * lowercase(name) * "_nelder_mead.gif")
-    animate_simplex(name * " (Nelder-Mead)", xs, ys, Zlog, nm_simplex, nm_path, optimum, nm_out, lower, upper, legend_pos)
+    animate_simplex(xs, ys, Zlog, nm_simplex, nm_path, optimum, nm_out, lower, upper, legend_pos)
 
     # BFGS animation
     x0 = make_x0(lower, upper, seed)
     bfgs_path, _ = optim_trace(fvec, x0, Optim.BFGS(), lower, upper; maxiters=maxiters, maxevals=maxevals)
     bfgs_out = joinpath(outdir, "2d_" * lowercase(name) * "_bfgs.gif")
-    animate_path(name * " (BFGS)", xs, ys, Zlog, bfgs_path, optimum, bfgs_out, lower, upper, legend_pos)
+    animate_path(xs, ys, Zlog, bfgs_path, optimum, bfgs_out, lower, upper, legend_pos)
 end
 
 println("saved to: ", outdir)
