@@ -225,6 +225,98 @@ end
     @test DifferentialEvolution._lshade_population_size(state, 100) == 4
 end
 
+@testset "jso success-history and archive update" begin
+    rng = MersenneTwister(9)
+    parent_pop = [
+        1.0 2.0 3.0 4.0;
+        1.0 2.0 3.0 4.0;
+    ]
+    parent_fitness = [sum(abs2, view(parent_pop, :, i)) for i in 1:4]
+    trial_pop = [
+        0.0 2.0 10.0 0.5;
+        0.0 2.0 10.0 0.5;
+    ]
+    trial_fitness = [sum(abs2, view(trial_pop, :, i)) for i in 1:4]
+    jso_state = DifferentialEvolution._make_jso_state(Float64, 4, 5, 0.25, 100, 20)
+    jso_state.cr_vals = [0.1, 0.2, 0.3, 0.4]
+    jso_state.f_vals = [0.5, 0.6, 0.7, 0.8]
+
+    for index in 1:4
+        if trial_fitness[index] <= parent_fitness[index]
+            DifferentialEvolution._on_success!(
+                jso_state,
+                index,
+                view(trial_pop, :, index),
+                trial_fitness[index],
+                parent_fitness[index],
+                parent_pop,
+                rng,
+            )
+        end
+    end
+
+    @test jso_state.success_cr == [0.1, 0.4]
+    @test jso_state.success_f == [0.5, 0.8]
+    @test jso_state.success_df == [
+        abs(trial_fitness[1] - parent_fitness[1]),
+        abs(trial_fitness[4] - parent_fitness[4]),
+    ]
+    @test length(jso_state.archive) == 2
+end
+
+@testset "jso p schedule increases from pmin to pmax" begin
+    rng = MersenneTwister(10)
+    initial_popsize = 10
+    jso_state = DifferentialEvolution._make_jso_state(Float64, initial_popsize, 5, 0.25, 100, 20)
+    population = reshape(collect(1.0:(2 * initial_popsize)), 2, initial_popsize)
+    fitness = collect(1.0:initial_popsize)
+
+    @test isapprox(jso_state.p, jso_state.pmin; atol=1e-12, rtol=0)
+
+    DifferentialEvolution._end_generation!(jso_state, population, fitness, rng, 20)
+    @test isapprox(jso_state.p, jso_state.pmin + (jso_state.pmax - jso_state.pmin) * 0.2; atol=1e-12, rtol=0)
+
+    DifferentialEvolution._end_generation!(jso_state, population, fitness, rng, 100)
+    @test isapprox(jso_state.p, jso_state.pmax; atol=1e-12, rtol=0)
+end
+
+@testset "jso memory update and fixed memory entry" begin
+    rng = MersenneTwister(11)
+    initial_popsize = 10
+    jso_state = DifferentialEvolution._make_jso_state(Float64, initial_popsize, 5, 0.25, 100, 20)
+    population = reshape(collect(1.0:(2 * initial_popsize)), 2, initial_popsize)
+    fitness = collect(1.0:initial_popsize)
+
+    jso_state.success_cr = [0.2, 0.8]
+    jso_state.success_f = [0.4, 0.9]
+    jso_state.success_df = [1.0, 3.0]
+    initial_mcr = jso_state.MCR[1]
+    initial_mf = jso_state.MF[1]
+    expected_mean_cr = (1.0 * 0.2^2 + 3.0 * 0.8^2) / (1.0 * 0.2 + 3.0 * 0.8)
+    expected_mean_f = (1.0 * 0.4^2 + 3.0 * 0.9^2) / (1.0 * 0.4 + 3.0 * 0.9)
+
+    DifferentialEvolution._end_generation!(jso_state, population, fitness, rng, 20)
+
+    @test isapprox(jso_state.MCR[1], (initial_mcr + expected_mean_cr) / 2; atol=1e-12, rtol=0)
+    @test isapprox(jso_state.MF[1], (initial_mf + expected_mean_f) / 2; atol=1e-12, rtol=0)
+    @test jso_state.k == 2
+
+    fixed_index = jso_state.fixed_idx
+    @test fixed_index == 5
+    jso_state.k = fixed_index
+    jso_state.success_cr = [0.5]
+    jso_state.success_f = [0.6]
+    jso_state.success_df = [1.0]
+    fixed_mcr_before = jso_state.MCR[fixed_index]
+    fixed_mf_before = jso_state.MF[fixed_index]
+
+    DifferentialEvolution._end_generation!(jso_state, population, fitness, rng, 40)
+
+    @test jso_state.k == 1
+    @test jso_state.MCR[fixed_index] == fixed_mcr_before
+    @test jso_state.MF[fixed_index] == fixed_mf_before
+end
+
 @testset "history off" begin
     f(x) = sum(abs2, x)
     lower = fill(-2.0, 2)

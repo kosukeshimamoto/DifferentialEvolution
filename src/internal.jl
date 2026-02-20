@@ -375,7 +375,7 @@ function _make_jso_state(T, popsize, memory_size, pmax, maxevals, maxiters)
         1,
         pmax_t,
         pmin_t,
-        pmax_t,
+        pmin_t,
         Vector{T}(undef, popsize),
         Vector{T}(undef, popsize),
         T[],
@@ -591,6 +591,16 @@ function _on_success!(state::Union{SHADEState, LSHADEState}, i, trial, f_trial, 
     return nothing
 end
 
+function _on_success!(state::JSOState, i, trial, f_trial, f_parent, pop, rng)
+    if f_trial < f_parent
+        push!(state.success_cr, state.cr_vals[i])
+        push!(state.success_f, state.f_vals[i])
+        push!(state.success_df, abs(f_trial - f_parent))
+        _archive_push!(state.archive, state.archive_limit, view(pop, :, i), rng)
+    end
+    return nothing
+end
+
 _end_generation!(state::AbstractStrategy, pop, fitness, rng, evaluations) = (pop, fitness)
 
 function _end_generation!(state::SHADEState, pop, fitness, rng, evaluations)
@@ -656,7 +666,7 @@ function _end_generation!(state::JSOState, pop, fitness, rng, evaluations)
     if state.maxevals > 0
         nfe = min(evaluations, state.maxevals)
         progress = oftype(state.p, nfe) / oftype(state.p, state.maxevals)
-        state.p = state.pmax - (state.pmax - state.pmin) * progress
+        state.p = state.pmin + (state.pmax - state.pmin) * progress
         state.p = clamp(state.p, state.pmin, state.pmax)
     end
 
