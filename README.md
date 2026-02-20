@@ -134,6 +134,28 @@ Algorithm steps:
    - After shrinking, keep the best individuals and trim archive size to the new population size.
    - Keep SHADE-style success-history parameter adaptation during the run.
 
+## Algorithm Suggestions
+
+For most practical runs, **start with L-SHADE**.  
+It provides the best speed-robustness balance in our typical nonconvex workloads.
+
+> The notes below are based on the **author's empirical experience** (multi-seed benchmarks and practical usage), not a formal proof of universal superiority.
+
+### 1. DE
+DE is **not recommended** here, because SHADE and L-SHADE consistently perform better in our tests.
+
+### 2. SHADE
+SHADE is usually more robust than plain DE due to success-history parameter adaptation.  
+Choose SHADE when cross-seed stability on rugged landscapes matters more than peak speed.
+
+### 3. L-SHADE
+L-SHADE is the recommended default in this package.  
+In the author's tests, it most often improves runtime over SHADE while keeping strong reliability.
+
+### 4. JSO
+JSO is a speed-oriented option and can be the fastest on some problems.  
+Its robustness can be more problem-dependent than SHADE/L-SHADE.
+
 ## API
 
 ```
