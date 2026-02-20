@@ -3,12 +3,31 @@ results/
 results_*/
 logs/
 
-# Generated benchmark and plotting artifacts
-reports/benchmarks/**/plots/
-reports/benchmarks/**/*.png
-reports/benchmarks/**/*.svg
-reports/benchmarks/**/*.pdf
-reports/benchmarks/**/*.html
+# Reports: ignore generated artifacts by default, keep only README gallery assets.
+reports/**
+!reports/
+!reports/README.md
+!reports/2d/
+reports/2d/*
+!reports/2d/2d_sphere_bfgs.gif
+!reports/2d/2d_sphere_nelder_mead.gif
+!reports/2d/2d_sphere_de.gif
+!reports/2d/2d_sphere_shade.gif
+!reports/2d/2d_rosenbrock_bfgs.gif
+!reports/2d/2d_rosenbrock_nelder_mead.gif
+!reports/2d/2d_rosenbrock_de.gif
+!reports/2d/2d_rosenbrock_shade.gif
+!reports/2d/2d_rastrigin_bfgs.gif
+!reports/2d/2d_rastrigin_nelder_mead.gif
+!reports/2d/2d_rastrigin_de.gif
+!reports/2d/2d_rastrigin_shade.gif
+!reports/2d/2d_schwefel_bfgs.gif
+!reports/2d/2d_schwefel_nelder_mead.gif
+!reports/2d/2d_schwefel_de.gif
+!reports/2d/2d_schwefel_shade.gif
 
 # OS files
 .DS_Store
+
+# Avoid accidental upload of paper PDFs placed at repository root
+/*.pdf

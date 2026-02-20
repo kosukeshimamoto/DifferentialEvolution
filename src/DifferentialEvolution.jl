@@ -54,6 +54,7 @@ struct RunSettings{T}
     job_id::Int
     message::Bool
     message_every::Int
+    message_mode::Symbol
 end
 
 """
@@ -126,6 +127,7 @@ function Result(best_x::Vector{T}, best_f::T, de_status::Symbol, evaluations::In
         0,
         false,
         1,
+        :compact,
     )
     return Result(
         best_x,
@@ -152,7 +154,7 @@ function Result(best_x::Vector{T}, best_f::T, de_status::Symbol, evaluations::In
 end
 
 """
-    optimize(f, lower, upper; rng, algorithm, popsize, maxiters, maxevals, F, CR, memory_size, pmax, target, history, parallel, local_refine, local_method, local_maxiters, local_tol, trace_history, job_id, message, message_every)
+    optimize(f, lower, upper; rng, algorithm, popsize, maxiters, maxevals, F, CR, memory_size, pmax, target, history, parallel, local_refine, local_method, local_maxiters, local_tol, trace_history, job_id, message, message_every, message_mode)
 
 Minimize `f` over a box defined by `lower` and `upper`.
 `rng` is required and controls all randomness.
@@ -168,7 +170,8 @@ optimization fails, the DE best solution is returned safely.
 If `trace_history=true`, per-generation best records are stored in `result.trace`
 and can be exported with `write_trace_csv`.
 
-If `message=true`, progress is printed during optimization.
+If `message=true`, progress is printed during optimization. `message_mode=:compact`
+prints a lightweight summary; `message_mode=:detailed` also prints full `best_x`.
 """
 function optimize(
     f,
@@ -194,6 +197,7 @@ function optimize(
     job_id::Int = 0,
     message::Bool = false,
     message_every::Int = 1,
+    message_mode::Symbol = :compact,
 )
     total_start_ns = time_ns()
     if isempty(lower) || isempty(upper)
@@ -228,6 +232,7 @@ function optimize(
         local_maxiters,
         local_tol,
         message_every,
+        message_mode,
     )
 
     T = promote_type(Float64, eltype(lower), eltype(upper), typeof(F), typeof(CR), typeof(target))
@@ -292,6 +297,7 @@ function optimize(
         job_id,
         message,
         message_every,
+        message_mode,
     )
     elapsed_de_sec = (time_ns() - de_start_ns) / 1e9
 
@@ -332,20 +338,35 @@ function optimize(
 
     if local_refine
         if message
-            println(
-                "[LOCAL-START] job=",
-                job_id,
-                " generation=",
-                iterations + 1,
-                " evaluations=",
-                de_evaluations,
-                " method=",
-                local_method,
-                " de_best_f=",
-                de_best_f,
-                " de_best_x=",
-                de_best_x,
-            )
+            if message_mode == :detailed
+                println(
+                    "[LOCAL-START] job=",
+                    job_id,
+                    " generation=",
+                    iterations + 1,
+                    " evaluations=",
+                    de_evaluations,
+                    " method=",
+                    local_method,
+                    " de_best_f=",
+                    de_best_f,
+                    " de_best_x=",
+                    de_best_x,
+                )
+            else
+                println(
+                    "[LOCAL-START] job=",
+                    job_id,
+                    " generation=",
+                    iterations + 1,
+                    " evaluations=",
+                    de_evaluations,
+                    " method=",
+                    local_method,
+                    " de_best_f=",
+                    de_best_f,
+                )
+            end
         end
         if trace_history
             push!(
@@ -386,20 +407,35 @@ function optimize(
             )
         end
         if message
-            println(
-                "[LOCAL-END] job=",
-                job_id,
-                " generation=",
-                iterations + 1,
-                " evaluations=",
-                de_evaluations + local_evaluations,
-                " status=",
-                local_status,
-                " local_best_f=",
-                local_best_f,
-                " local_best_x=",
-                local_best_x,
-            )
+            if message_mode == :detailed
+                println(
+                    "[LOCAL-END] job=",
+                    job_id,
+                    " generation=",
+                    iterations + 1,
+                    " evaluations=",
+                    de_evaluations + local_evaluations,
+                    " status=",
+                    local_status,
+                    " local_best_f=",
+                    local_best_f,
+                    " local_best_x=",
+                    local_best_x,
+                )
+            else
+                println(
+                    "[LOCAL-END] job=",
+                    job_id,
+                    " generation=",
+                    iterations + 1,
+                    " evaluations=",
+                    de_evaluations + local_evaluations,
+                    " status=",
+                    local_status,
+                    " local_best_f=",
+                    local_best_f,
+                )
+            end
         end
         if local_best_f < de_best_f
             best_x = copy(local_best_x)
@@ -433,6 +469,7 @@ function optimize(
         job_id,
         message,
         message_every,
+        message_mode,
     )
     return Result(
         best_x,

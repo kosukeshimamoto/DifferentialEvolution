@@ -137,7 +137,7 @@ Algorithm steps:
 ## API
 
 ```
-optimize(f, lower, upper; rng, algorithm, popsize, maxiters, maxevals, F, CR, memory_size, pmax, target, history, parallel, local_refine, local_method, local_maxiters, local_tol, trace_history, job_id, message, message_every)
+optimize(f, lower, upper; rng, algorithm, popsize, maxiters, maxevals, F, CR, memory_size, pmax, target, history, parallel, local_refine, local_method, local_maxiters, local_tol, trace_history, job_id, message, message_every, message_mode)
 ```
 
 - `f`: objective function taking an `AbstractVector`
@@ -165,6 +165,7 @@ Keywords:
 - `job_id`: integer job identifier stored in trace rows (default `0`)
 - `message`: print progress messages during optimization (default `false`)
 - `message_every`: print every N generations when `message=true` (default `1`)
+- `message_mode`: `:compact` (default) or `:detailed`; detailed mode also prints full `best_x`
 
 Notes:
 
@@ -174,7 +175,7 @@ Notes:
   (population shrinks linearly to 4 by the evaluation budget).
 - `algorithm=:jso` is a jSO-style variant of iL-SHADE with weighted
   current-to-pbest mutation, linear population size reduction, and a
-  linearly decreasing p schedule.
+  linearly increasing p schedule from `pmin` to `pmax`.
 - `parallel=true` switches to a generation-synchronous update. Trials are
   generated from the same parent population and evaluated in parallel. Results
   can differ from the default asynchronous update but remain reproducible when
@@ -183,8 +184,10 @@ Notes:
   the value is treated as `Inf` so the run continues safely.
 - Local refinement starts from the DE best solution. If local optimization fails,
   the DE best solution is returned safely.
-- With `message=true`, DE progress is printed as:
-  `generation/current_maxiters`, evaluation count, best parameter, and best objective value.
+- With `message=true` and `message_mode=:compact`, DE progress prints
+  `generation/current_maxiters`, evaluations, `best_f`, `delta_best`, and stall length.
+- With `message_mode=:detailed`, logs additionally include full `best_x`
+  (useful for debugging, heavier logs on high dimensions).
 
 Return value `Result` fields:
 
@@ -316,8 +319,8 @@ SEED=12 OBJECTIVE=rastrigin DIM=20 ALGORITHM=shade MAXEVALS=200000 LOCAL_REFINE=
 # 2) Optionally save per-generation trace CSV
 SEED=12 TRACE_CSV=true julia --project=. scripts/run_de.jl
 
-# 3) Optionally print progress every 10 generations
-SEED=12 MESSAGE=true MESSAGE_EVERY=10 julia --project=. scripts/run_de.jl
+# 3) Optionally print compact progress every 10 generations
+SEED=12 MESSAGE=true MESSAGE_EVERY=10 MESSAGE_MODE=compact julia --project=. scripts/run_de.jl
 
 # 4) Aggregate all runs
 julia --project=. scripts/summarize_runs.jl --results_dir results --top_k 10
@@ -327,6 +330,21 @@ Output files:
 - `results/seed_<seed>.json`: one run result (best values, statuses, evaluations, timings, settings).
 - `results/seed_<seed>_trace.csv`: optional trace (`TRACE_CSV=true`).
 - `results/summary.json`: aggregate report (`best_seed`, `top_k`, summary stats, skipped files).
+
+`results/seed_<seed>.json` key fields:
+- `algorithm`: `de`, `shade`, `lshade`, or `jso`.
+- `best_f`, `best_x`: final adopted solution after optional local refinement.
+- `de_best_f`, `de_best_x`: best solution from DE phase only.
+- `status`: final outcome (`target_reached` or `not_reached`).
+- `de_status`: DE stop reason (`target_reached`, `maxiters`, `maxevals`, `stopped`).
+- `local_status`: local-refinement outcome (`disabled`, `success`, `failed`, `stopped`).
+- `settings`: resolved run settings, including `message`, `message_every`, and `message_mode`.
+
+Algorithm interpretation for JSON `algorithm`:
+- `de`: fixed `F` and `CR`, classic DE/rand/1/bin.
+- `shade`: success-history adaptation for `F`/`CR` plus p-best + archive mutation.
+- `lshade`: SHADE + linear population-size reduction.
+- `jso`: iL-SHADE-style variant with stage-dependent parameter guards, weighted mutation, and increasing `p` schedule.
 
 Aggregation behavior:
 - Malformed JSON, missing required fields, or invalid/non-finite `best_f` rows are skipped.

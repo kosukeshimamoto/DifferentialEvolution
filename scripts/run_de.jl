@@ -173,6 +173,7 @@ history = parse_bool(get_setting("history"; default="false"), false)
 trace_csv = parse_bool(get_setting("trace_csv"; default="false"), false)
 message = parse_bool(get_setting("message"; default="false"), false)
 message_every = require_positive_int("message_every", parse(Int, String(get_setting("message_every"; default="1"))))
+message_mode = Symbol(lowercase(String(get_setting("message_mode"; default="compact"))))
 
 results_dir = String(get_setting("results_dir"; default="results"))
 if isempty(strip(results_dir))
@@ -216,6 +217,7 @@ result = DifferentialEvolution.optimize(
     job_id=seed,
     message=message,
     message_every=message_every,
+    message_mode=message_mode,
 )
 wall_clock_sec = (time_ns() - started_ns) / 1e9
 
@@ -265,6 +267,7 @@ payload = Dict(
         "job_id" => result.settings.job_id,
         "message" => result.settings.message,
         "message_every" => result.settings.message_every,
+        "message_mode" => String(result.settings.message_mode),
     ),
     "julia_num_threads" => Threads.nthreads(),
     "slurm_cpus_per_task" => get(ENV, "SLURM_CPUS_PER_TASK", ""),
@@ -280,6 +283,7 @@ payload = Dict(
         "pmax" => pmax,
         "target" => json_safe_number(target),
         "history" => history,
+        "message_mode" => String(message_mode),
     ),
 )
 

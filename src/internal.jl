@@ -1,5 +1,6 @@
 const _ALGORITHMS = (:de, :shade, :lshade, :jso)
 const _LOCAL_METHODS = (:nelder_mead, :lbfgs)
+const _MESSAGE_MODES = (:compact, :detailed)
 
 function _validate_inputs(
     lower,
@@ -17,6 +18,7 @@ function _validate_inputs(
     local_maxiters,
     local_tol,
     message_every,
+    message_mode,
 )
     if isempty(lower) || isempty(upper)
         throw(ArgumentError("lower and upper must be non-empty"))
@@ -65,6 +67,9 @@ function _validate_inputs(
     if message_every <= 0
         throw(ArgumentError("message_every must be positive"))
     end
+    if message_mode ∉ _MESSAGE_MODES
+        throw(ArgumentError("message_mode must be one of :compact or :detailed"))
+    end
     if algorithm != :de
         if !isnothing(memory_size) && memory_size <= 0
             throw(ArgumentError("memory_size must be positive"))
@@ -79,6 +84,7 @@ end
 function _print_generation_message(
     message::Bool,
     message_every::Int,
+    message_mode::Symbol,
     job_id::Int,
     iterations::Int,
     maxiters::Int,
@@ -86,6 +92,8 @@ function _print_generation_message(
     maxevals::Int,
     best_f,
     best_x,
+    delta_best,
+    stall_generations::Int,
 )
     if !message
         return nothing
@@ -93,22 +101,47 @@ function _print_generation_message(
     if iterations % message_every != 0
         return nothing
     end
-    println(
-        "[DE] job=",
-        job_id,
-        " generation=",
-        iterations,
-        "/",
-        maxiters,
-        " evaluations=",
-        evaluations,
-        "/",
-        maxevals,
-        " best_f=",
-        best_f,
-        " best_x=",
-        best_x,
-    )
+    if message_mode == :detailed
+        println(
+            "[DE] job=",
+            job_id,
+            " generation=",
+            iterations,
+            "/",
+            maxiters,
+            " evaluations=",
+            evaluations,
+            "/",
+            maxevals,
+            " best_f=",
+            best_f,
+            " delta_best=",
+            delta_best,
+            " stall_generations=",
+            stall_generations,
+            " best_x=",
+            best_x,
+        )
+    else
+        println(
+            "[DE] job=",
+            job_id,
+            " generation=",
+            iterations,
+            "/",
+            maxiters,
+            " evaluations=",
+            evaluations,
+            "/",
+            maxevals,
+            " best_f=",
+            best_f,
+            " delta_best=",
+            delta_best,
+            " stall_generations=",
+            stall_generations,
+        )
+    end
     return nothing
 end
 
@@ -697,6 +730,7 @@ function _run_evolution_serial!(
     job_id,
     message,
     message_every,
+    message_mode,
 )
     T = eltype(pop)
     popsize = size(pop, 2)
@@ -708,6 +742,8 @@ function _run_evolution_serial!(
     iterations = 0
     evaluations = popsize
     stop_due_to_evals = false
+    previous_best_f = best_f
+    stall_generations = 0
 
     while iterations < maxiters && evaluations < maxevals && best_f > target_t
         iterations += 1
@@ -761,9 +797,22 @@ function _run_evolution_serial!(
                 ),
             )
         end
+        delta_best = if isfinite(previous_best_f) && isfinite(best_f)
+            max(previous_best_f - best_f, zero(T))
+        elseif isfinite(best_f) && !isfinite(previous_best_f)
+            T(Inf)
+        else
+            zero(T)
+        end
+        if best_f < previous_best_f
+            stall_generations = 0
+        else
+            stall_generations += 1
+        end
         _print_generation_message(
             message,
             message_every,
+            message_mode,
             job_id,
             iterations,
             maxiters,
@@ -771,7 +820,10 @@ function _run_evolution_serial!(
             maxevals,
             best_f,
             best_x,
+            delta_best,
+            stall_generations,
         )
+        previous_best_f = best_f
         if stop_due_to_evals
             break
         end
@@ -801,6 +853,7 @@ function _run_evolution_parallel!(
     job_id,
     message,
     message_every,
+    message_mode,
 )
     T = eltype(pop)
     dim = size(pop, 1)
@@ -813,6 +866,8 @@ function _run_evolution_parallel!(
     iterations = 0
     evaluations = popsize
     stop_due_to_evals = false
+    previous_best_f = best_f
+    stall_generations = 0
 
     while iterations < maxiters && evaluations < maxevals && best_f > target_t
         iterations += 1
@@ -892,9 +947,22 @@ function _run_evolution_parallel!(
                 ),
             )
         end
+        delta_best = if isfinite(previous_best_f) && isfinite(best_f)
+            max(previous_best_f - best_f, zero(T))
+        elseif isfinite(best_f) && !isfinite(previous_best_f)
+            T(Inf)
+        else
+            zero(T)
+        end
+        if best_f < previous_best_f
+            stall_generations = 0
+        else
+            stall_generations += 1
+        end
         _print_generation_message(
             message,
             message_every,
+            message_mode,
             job_id,
             iterations,
             maxiters,
@@ -902,7 +970,10 @@ function _run_evolution_parallel!(
             maxevals,
             best_f,
             best_x,
+            delta_best,
+            stall_generations,
         )
+        previous_best_f = best_f
         if evaluations >= maxevals
             stop_due_to_evals = true
         end
@@ -936,6 +1007,7 @@ function _run_evolution!(
     job_id,
     message,
     message_every,
+    message_mode,
 )
     if parallel
         return _run_evolution_parallel!(
@@ -955,6 +1027,7 @@ function _run_evolution!(
             job_id,
             message,
             message_every,
+            message_mode,
         )
     end
     return _run_evolution_serial!(
@@ -974,6 +1047,7 @@ function _run_evolution!(
         job_id,
         message,
         message_every,
+        message_mode,
     )
 end
 

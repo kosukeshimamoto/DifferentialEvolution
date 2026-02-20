@@ -58,6 +58,7 @@ end
     @test_throws ArgumentError optimize(f, [0.0], [1.0]; rng=rng, local_maxiters=0)
     @test_throws ArgumentError optimize(f, [0.0], [1.0]; rng=rng, local_tol=0.0)
     @test_throws ArgumentError optimize(f, [0.0], [1.0]; rng=rng, message_every=0)
+    @test_throws ArgumentError optimize(f, [0.0], [1.0]; rng=rng, message_mode=:verbose)
 end
 
 @testset "sanity" begin
@@ -843,6 +844,7 @@ end
     @test res.settings.job_id == 77
     @test res.settings.message == false
     @test res.settings.message_every == 1
+    @test res.settings.message_mode == :compact
 end
 
 @testset "trace csv export" begin
@@ -907,8 +909,47 @@ end
     @test occursin("[DE] job=11 generation=4/6", message_text)
     @test occursin("[DE] job=11 generation=6/6", message_text)
     @test !occursin("[DE] job=11 generation=1/6", message_text)
+    @test occursin("delta_best=", message_text)
+    @test occursin("stall_generations=", message_text)
+    @test !occursin("best_x=", message_text)
     @test occursin("[LOCAL-START] job=11", message_text)
     @test occursin("[LOCAL-END] job=11", message_text)
+end
+
+@testset "message detailed output includes best_x" begin
+    f(x) = sum(abs2, x)
+    lower = fill(-2.0, 2)
+    upper = fill(2.0, 2)
+
+    message_text = mktemp() do _, temp_io
+        redirect_stdout(temp_io) do
+            rng = MersenneTwister(405)
+            optimize(
+                f,
+                lower,
+                upper;
+                rng=rng,
+                popsize=10,
+                maxiters=4,
+                history=false,
+                local_refine=true,
+                local_method=:nelder_mead,
+                local_maxiters=20,
+                message=true,
+                message_every=2,
+                message_mode=:detailed,
+                job_id=12,
+            )
+        end
+        flush(temp_io)
+        seekstart(temp_io)
+        read(temp_io, String)
+    end
+
+    @test occursin("[DE] job=12 generation=2/4", message_text)
+    @test occursin("best_x=", message_text)
+    @test occursin("[LOCAL-START] job=12", message_text)
+    @test occursin("[LOCAL-END] job=12", message_text)
 end
 
 @testset "summarize script skips malformed json files" begin
