@@ -1038,3 +1038,132 @@ end
         @test occursin("invalid_json", String(summary_data["skipped_runs"][1]["reason"]))
     end
 end
+
+@testset "archive push matches reference semantics" begin
+    function archive_push_reference!(archive, limit, vec, rng)
+        if limit <= 0
+            return nothing
+        end
+        push!(archive, copy(vec))
+        if length(archive) > limit
+            idx = rand(rng, 1:length(archive))
+            archive[idx] = archive[end]
+            pop!(archive)
+        end
+        return nothing
+    end
+
+    rng_reference = MersenneTwister(12345)
+    rng_current = MersenneTwister(12345)
+    archive_reference = Vector{Vector{Float64}}()
+    archive_current = Vector{Vector{Float64}}()
+    vector_rng = MersenneTwister(67890)
+
+    for _ in 1:200
+        vec = rand(vector_rng, 4)
+        archive_push_reference!(archive_reference, 7, vec, rng_reference)
+        DifferentialEvolution._archive_push!(archive_current, 7, vec, rng_current)
+        @test archive_current == archive_reference
+    end
+
+    @test rand(rng_current, UInt64) == rand(rng_reference, UInt64)
+
+    rng_reference_zero = MersenneTwister(2027)
+    rng_current_zero = MersenneTwister(2027)
+    archive_reference_zero = [[1.0, 2.0]]
+    archive_current_zero = [[1.0, 2.0]]
+    vec = [3.0, 4.0]
+    archive_push_reference!(archive_reference_zero, 0, vec, rng_reference_zero)
+    DifferentialEvolution._archive_push!(archive_current_zero, 0, vec, rng_current_zero)
+    @test archive_current_zero == archive_reference_zero
+    @test rand(rng_current_zero, UInt64) == rand(rng_reference_zero, UInt64)
+end
+
+@testset "message and trace flags do not change optimization results" begin
+    f(x) = sum(abs2, x)
+    lower = fill(-3.0, 4)
+    upper = fill(3.0, 4)
+
+    for (offset, alg) in enumerate((:de, :shade, :lshade, :jso))
+        seed = 3000 + offset
+        rng_base = MersenneTwister(seed)
+        res_base = optimize(
+            f,
+            lower,
+            upper;
+            rng=rng_base,
+            algorithm=alg,
+            maxiters=40,
+            popsize=20,
+            history=true,
+            message=false,
+            trace_history=false,
+        )
+
+        res_compact = nothing
+        redirect_stdout(devnull) do
+            rng_compact = MersenneTwister(seed)
+            res_compact = optimize(
+                f,
+                lower,
+                upper;
+                rng=rng_compact,
+                algorithm=alg,
+                maxiters=40,
+                popsize=20,
+                history=true,
+                message=true,
+                message_every=2,
+                message_mode=:compact,
+                trace_history=false,
+            )
+        end
+        compact_result = res_compact::Result
+
+        res_detailed = nothing
+        redirect_stdout(devnull) do
+            rng_detailed = MersenneTwister(seed)
+            res_detailed = optimize(
+                f,
+                lower,
+                upper;
+                rng=rng_detailed,
+                algorithm=alg,
+                maxiters=40,
+                popsize=20,
+                history=true,
+                message=true,
+                message_every=2,
+                message_mode=:detailed,
+                trace_history=false,
+            )
+        end
+        detailed_result = res_detailed::Result
+
+        rng_trace = MersenneTwister(seed)
+        trace_result = optimize(
+            f,
+            lower,
+            upper;
+            rng=rng_trace,
+            algorithm=alg,
+            maxiters=40,
+            popsize=20,
+            history=true,
+            message=false,
+            trace_history=true,
+        )
+
+        for compared_result in (compact_result, detailed_result, trace_result)
+            @test compared_result.best_x == res_base.best_x
+            @test compared_result.best_f == res_base.best_f
+            @test compared_result.history == res_base.history
+            @test compared_result.de_best_x == res_base.de_best_x
+            @test compared_result.de_best_f == res_base.de_best_f
+            @test compared_result.evaluations == res_base.evaluations
+            @test compared_result.iterations == res_base.iterations
+            @test compared_result.de_status == res_base.de_status
+            @test compared_result.status == res_base.status
+        end
+    end
+end

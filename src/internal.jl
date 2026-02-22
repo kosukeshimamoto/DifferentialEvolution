@@ -146,36 +146,23 @@ function _print_generation_message(
 end
 
 function _objective_value_or_inf(f, x, T, message, job_id, phase, evaluations, candidate_index)
+    if !message
+        objective_value = f(x)
+        converted_value = try
+            T(objective_value)
+        catch
+            return T(Inf)
+        end
+        if isfinite(converted_value)
+            return converted_value
+        end
+        return T(Inf)
+    end
+
     objective_value = f(x)
     converted_value = try
         T(objective_value)
     catch conversion_error
-        if message
-            println(
-                stderr,
-                "[WARNING] job=",
-                job_id,
-                " phase=",
-                phase,
-                " evaluations=",
-                evaluations,
-                " candidate=",
-                candidate_index,
-                " objective conversion failed with error=",
-                typeof(conversion_error),
-                " value_type=",
-                typeof(objective_value),
-                " value=",
-                objective_value,
-                " treated_as=Inf",
-            )
-        end
-        return T(Inf)
-    end
-    if isfinite(converted_value)
-        return converted_value
-    end
-    if message
         println(
             stderr,
             "[WARNING] job=",
@@ -186,11 +173,33 @@ function _objective_value_or_inf(f, x, T, message, job_id, phase, evaluations, c
             evaluations,
             " candidate=",
             candidate_index,
-            " objective returned non-finite value=",
-            converted_value,
+            " objective conversion failed with error=",
+            typeof(conversion_error),
+            " value_type=",
+            typeof(objective_value),
+            " value=",
+            objective_value,
             " treated_as=Inf",
         )
+        return T(Inf)
     end
+    if isfinite(converted_value)
+        return converted_value
+    end
+    println(
+        stderr,
+        "[WARNING] job=",
+        job_id,
+        " phase=",
+        phase,
+        " evaluations=",
+        evaluations,
+        " candidate=",
+        candidate_index,
+        " objective returned non-finite value=",
+        converted_value,
+        " treated_as=Inf",
+    )
     return T(Inf)
 end
 
@@ -238,11 +247,14 @@ function _archive_push!(archive, limit, vec, rng)
     if limit <= 0
         return nothing
     end
-    push!(archive, copy(vec))
-    if length(archive) > limit
-        idx = rand(rng, 1:length(archive))
-        archive[idx] = archive[end]
-        pop!(archive)
+    archive_len = length(archive)
+    if archive_len < limit
+        push!(archive, copy(vec))
+        return nothing
+    end
+    idx = rand(rng, 1:(archive_len + 1))
+    if idx <= archive_len
+        copyto!(archive[idx], vec)
     end
     return nothing
 end
@@ -742,6 +754,7 @@ function _run_evolution_serial!(
 )
     T = eltype(pop)
     popsize = size(pop, 2)
+    track_best_vector = !isnothing(trace_rows) || (message && message_mode == :detailed)
     best_idx = argmin(fitness)
     best_f = fitness[best_idx]
     best_x = copy(view(pop, :, best_idx))
@@ -781,7 +794,9 @@ function _run_evolution_serial!(
                 copyto!(view(pop, :, i), trial)
                 if f_trial < best_f
                     best_f = f_trial
-                    copyto!(best_x, trial)
+                    if track_best_vector
+                        copyto!(best_x, trial)
+                    end
                 end
             end
             if best_f <= target_t
@@ -793,7 +808,9 @@ function _run_evolution_serial!(
         pop, fitness = _end_generation!(strategy, pop, fitness, rng, evaluations)
         best_idx = argmin(fitness)
         best_f = fitness[best_idx]
-        copyto!(best_x, view(pop, :, best_idx))
+        if track_best_vector
+            copyto!(best_x, view(pop, :, best_idx))
+        end
         if history
             history_best[iterations] = best_f
         end
@@ -847,6 +864,7 @@ function _run_evolution_serial!(
     if history
         resize!(history_best, iterations)
     end
+    copyto!(best_x, view(pop, :, best_idx))
 
     return best_x, best_f, evaluations, iterations, history_best
 end
@@ -873,6 +891,7 @@ function _run_evolution_parallel!(
     T = eltype(pop)
     dim = size(pop, 1)
     popsize = size(pop, 2)
+    track_best_vector = !isnothing(trace_rows) || (message && message_mode == :detailed)
     best_idx = argmin(fitness)
     best_f = fitness[best_idx]
     best_x = copy(view(pop, :, best_idx))
@@ -945,7 +964,9 @@ function _run_evolution_parallel!(
         pop, fitness = _end_generation!(strategy, pop, fitness, rng, evaluations)
         best_idx = argmin(fitness)
         best_f = fitness[best_idx]
-        copyto!(best_x, view(pop, :, best_idx))
+        if track_best_vector
+            copyto!(best_x, view(pop, :, best_idx))
+        end
         if history
             history_best[iterations] = best_f
         end
@@ -1002,6 +1023,7 @@ function _run_evolution_parallel!(
     if history
         resize!(history_best, iterations)
     end
+    copyto!(best_x, view(pop, :, best_idx))
 
     return best_x, best_f, evaluations, iterations, history_best
 end
