@@ -1,6 +1,6 @@
 module DifferentialEvolution
 
-export Result, RunSettings, TraceRecord, optimize, write_trace_csv
+export Result, RunSettings, TraceRecord, SublevelSearchResult, optimize, find_sublevel_point, write_trace_csv
 
 using Optim
 using Random
@@ -103,6 +103,26 @@ struct Result{T}
     elapsed_total_sec::Float64
     settings::RunSettings{T}
     trace::Vector{TraceRecord{T}}
+end
+
+"""
+    SublevelSearchResult{T}
+
+Result returned by `find_sublevel_point`.
+
+Fields:
+- `overlap::Bool`: `true` if a point with `f(x) <= c + c_tol` was found
+- `best_x::Vector{T}`: best solution found during the run
+- `best_f::T`: objective value at `best_x`
+- `evaluations::Int`: number of objective evaluations used by DE phase
+- `stop_reason::Symbol`: `:overlap_found`, `:maxevals`, `:maxiters`, or `:stopped`
+"""
+struct SublevelSearchResult{T}
+    overlap::Bool
+    best_x::Vector{T}
+    best_f::T
+    evaluations::Int
+    stop_reason::Symbol
 end
 
 function Result(best_x::Vector{T}, best_f::T, de_status::Symbol, evaluations::Int, iterations::Int, history::Vector{T}) where {T}
@@ -492,6 +512,94 @@ function optimize(
         elapsed_total_sec,
         run_settings,
         trace,
+    )
+end
+
+"""
+    find_sublevel_point(f, lower, upper; c, c_tol=0.0, rng, algorithm=:de, popsize=nothing, maxiters=1000, maxevals=nothing, F=0.8, CR=0.9, memory_size=nothing, pmax=0.2, history=false, parallel=false, trace_history=false, job_id=0, message=false, message_every=1, message_mode=:compact)
+
+Search for a point satisfying `f(x) <= c + c_tol` inside the box `[lower, upper]`.
+
+Returns `SublevelSearchResult` and stops early when the threshold is found.
+"""
+function find_sublevel_point(
+    f,
+    lower::AbstractVector,
+    upper::AbstractVector;
+    c::Real,
+    c_tol::Real = 0.0,
+    rng::AbstractRNG,
+    algorithm::Symbol = :de,
+    popsize::Union{Int, Nothing} = nothing,
+    maxiters::Int = 1000,
+    maxevals::Union{Int, Nothing} = nothing,
+    F::Real = 0.8,
+    CR::Real = 0.9,
+    memory_size::Union{Int, Nothing} = nothing,
+    pmax::Real = 0.2,
+    history::Bool = false,
+    parallel::Bool = false,
+    trace_history::Bool = false,
+    job_id::Int = 0,
+    message::Bool = false,
+    message_every::Int = 1,
+    message_mode::Symbol = :compact,
+)
+    if !isfinite(c)
+        throw(ArgumentError("c must be finite"))
+    end
+    if !isfinite(c_tol)
+        throw(ArgumentError("c_tol must be finite"))
+    end
+    if c_tol < 0
+        throw(ArgumentError("c_tol must be >= 0"))
+    end
+    threshold = c + c_tol
+    if !isfinite(threshold)
+        throw(ArgumentError("c + c_tol must be finite"))
+    end
+
+    optimize_result = optimize(
+        f,
+        lower,
+        upper;
+        rng=rng,
+        algorithm=algorithm,
+        popsize=popsize,
+        maxiters=maxiters,
+        maxevals=maxevals,
+        F=F,
+        CR=CR,
+        memory_size=memory_size,
+        pmax=pmax,
+        target=threshold,
+        history=history,
+        parallel=parallel,
+        local_refine=false,
+        trace_history=trace_history,
+        job_id=job_id,
+        message=message,
+        message_every=message_every,
+        message_mode=message_mode,
+    )
+
+    overlap = optimize_result.de_best_f <= threshold
+    stop_reason = if overlap
+        :overlap_found
+    elseif optimize_result.de_status == :maxevals
+        :maxevals
+    elseif optimize_result.de_status == :maxiters
+        :maxiters
+    else
+        :stopped
+    end
+
+    return SublevelSearchResult(
+        overlap,
+        copy(optimize_result.de_best_x),
+        optimize_result.de_best_f,
+        optimize_result.de_evaluations,
+        stop_reason,
     )
 end
 

@@ -742,6 +742,7 @@ function _run_evolution_serial!(
     iterations = 0
     evaluations = popsize
     stop_due_to_evals = false
+    stop_due_to_target = false
     previous_best_f = best_f
     stall_generations = 0
 
@@ -774,6 +775,10 @@ function _run_evolution_serial!(
                     best_f = f_trial
                     copyto!(best_x, trial)
                 end
+            end
+            if best_f <= target_t
+                stop_due_to_target = true
+                break
             end
         end
 
@@ -824,7 +829,7 @@ function _run_evolution_serial!(
             stall_generations,
         )
         previous_best_f = best_f
-        if stop_due_to_evals
+        if stop_due_to_evals || stop_due_to_target
             break
         end
     end

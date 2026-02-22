@@ -211,6 +211,36 @@ Notes:
 - With `message_mode=:detailed`, logs additionally include full `best_x`
   (useful for debugging, heavier logs on high dimensions).
 
+Threshold-hit search API:
+
+```julia
+find_sublevel_point(f, lower, upper; c, c_tol=0.0, rng, algorithm, popsize, maxiters, maxevals, F, CR, memory_size, pmax, history, parallel, trace_history, job_id, message, message_every, message_mode)
+```
+
+- Finds whether any point in the box satisfies `f(x) <= c + c_tol`.
+- Stops early when a threshold hit is found.
+- Returns `SublevelSearchResult` with:
+  `overlap`, `best_x`, `best_f`, `evaluations`, and `stop_reason`.
+- `parallel=true` is supported. In this mode, threshold checks are generation-synchronous:
+  a generation batch may finish before stopping after a hit. This can still reduce wall-clock time when `f` is expensive.
+
+Example:
+
+```julia
+rng = MersenneTwister(42)
+hit = find_sublevel_point(
+    f,
+    lower,
+    upper;
+    c=1e-3,
+    c_tol=0.0,
+    rng=rng,
+    algorithm=:lshade,
+    maxiters=500,
+)
+println(hit.overlap, \" \", hit.stop_reason, \" \", hit.best_f)
+```
+
 Return value `Result` fields:
 
 - `best_x`: best solution vector

@@ -59,6 +59,9 @@ end
     @test_throws ArgumentError optimize(f, [0.0], [1.0]; rng=rng, local_tol=0.0)
     @test_throws ArgumentError optimize(f, [0.0], [1.0]; rng=rng, message_every=0)
     @test_throws ArgumentError optimize(f, [0.0], [1.0]; rng=rng, message_mode=:verbose)
+    @test_throws ArgumentError find_sublevel_point(f, [0.0], [1.0]; c=Inf, rng=rng)
+    @test_throws ArgumentError find_sublevel_point(f, [0.0], [1.0]; c=0.0, c_tol=Inf, rng=rng)
+    @test_throws ArgumentError find_sublevel_point(f, [0.0], [1.0]; c=0.0, c_tol=-1e-3, rng=rng)
 end
 
 @testset "sanity" begin
@@ -756,6 +759,64 @@ end
     )
     @test res_no_target.status == :not_reached
     @test res_no_target.de_status == :maxiters
+end
+
+@testset "find_sublevel_point returns overlap=true and stops immediately when threshold is hit" begin
+    lower = fill(-1.0, 2)
+    upper = fill(1.0, 2)
+
+    for algorithm in (:de, :shade, :lshade)
+        evaluation_counter = Ref(0)
+        function threshold_objective(_)
+            evaluation_counter[] += 1
+            return evaluation_counter[] >= 15 ? -1.0 : 1.0
+        end
+
+        rng = MersenneTwister(1201)
+        result = find_sublevel_point(
+            threshold_objective,
+            lower,
+            upper;
+            c=0.0,
+            rng=rng,
+            algorithm=algorithm,
+            popsize=8,
+            maxiters=50,
+            maxevals=200,
+        )
+
+        @test result.overlap == true
+        @test result.best_f <= 0.0
+        @test result.stop_reason == :overlap_found
+        @test result.evaluations == 15
+        @test evaluation_counter[] == result.evaluations
+    end
+end
+
+@testset "find_sublevel_point returns overlap=false when threshold is not found" begin
+    lower = fill(-1.0, 3)
+    upper = fill(1.0, 3)
+
+    for algorithm in (:de, :shade, :lshade)
+        constant_objective(_) = 10.0
+        rng = MersenneTwister(1202)
+        result = find_sublevel_point(
+            constant_objective,
+            lower,
+            upper;
+            c=0.0,
+            rng=rng,
+            algorithm=algorithm,
+            popsize=8,
+            maxiters=100,
+            maxevals=30,
+        )
+
+        @test result.overlap == false
+        @test result.best_f == 10.0
+        @test result.stop_reason == :maxevals
+        @test result.evaluations == 30
+    end
 end
 
 @testset "local refinement lbfgs falls back to finite diff" begin
