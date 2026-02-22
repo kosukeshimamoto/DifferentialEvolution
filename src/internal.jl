@@ -145,20 +145,20 @@ function _print_generation_message(
     return nothing
 end
 
-function _objective_value_or_inf(f, x, T, message, job_id, phase, evaluations, candidate_index)
-    if !message
-        objective_value = f(x)
-        converted_value = try
-            T(objective_value)
-        catch
-            return T(Inf)
-        end
-        if isfinite(converted_value)
-            return converted_value
-        end
+function _objective_value_or_inf_quiet(f, x, T, job_id, phase, evaluations, candidate_index)
+    objective_value = f(x)
+    converted_value = try
+        T(objective_value)
+    catch
         return T(Inf)
     end
+    if isfinite(converted_value)
+        return converted_value
+    end
+    return T(Inf)
+end
 
+function _objective_value_or_inf_verbose(f, x, T, job_id, phase, evaluations, candidate_index)
     objective_value = f(x)
     converted_value = try
         T(objective_value)
@@ -201,6 +201,13 @@ function _objective_value_or_inf(f, x, T, message, job_id, phase, evaluations, c
         " treated_as=Inf",
     )
     return T(Inf)
+end
+
+function _objective_value_or_inf(f, x, T, message, job_id, phase, evaluations, candidate_index)
+    if message
+        return _objective_value_or_inf_verbose(f, x, T, job_id, phase, evaluations, candidate_index)
+    end
+    return _objective_value_or_inf_quiet(f, x, T, job_id, phase, evaluations, candidate_index)
 end
 
 function _rand1distinct(rng, n, exclude)
@@ -363,6 +370,14 @@ end
 
 function _make_shade_state(T, popsize, memory_size, pmax)
     H = memory_size
+    success_cr = T[]
+    sizehint!(success_cr, popsize)
+    success_f = T[]
+    sizehint!(success_f, popsize)
+    success_df = T[]
+    sizehint!(success_df, popsize)
+    archive = Vector{Vector{T}}()
+    sizehint!(archive, popsize)
     return SHADEState(
         H,
         fill(T(0.5), H),
@@ -371,17 +386,25 @@ function _make_shade_state(T, popsize, memory_size, pmax)
         T(pmax),
         Vector{T}(undef, popsize),
         Vector{T}(undef, popsize),
-        T[],
-        T[],
-        T[],
-        Int[],
-        Vector{Vector{T}}(),
+        success_cr,
+        success_f,
+        success_df,
+        Vector{Int}(undef, popsize),
+        archive,
         popsize,
     )
 end
 
 function _make_lshade_state(T, popsize, memory_size, pmax, maxevals)
     H = memory_size
+    success_cr = T[]
+    sizehint!(success_cr, popsize)
+    success_f = T[]
+    sizehint!(success_f, popsize)
+    success_df = T[]
+    sizehint!(success_df, popsize)
+    archive = Vector{Vector{T}}()
+    sizehint!(archive, popsize)
     return LSHADEState(
         H,
         fill(T(0.5), H),
@@ -390,11 +413,11 @@ function _make_lshade_state(T, popsize, memory_size, pmax, maxevals)
         T(pmax),
         Vector{T}(undef, popsize),
         Vector{T}(undef, popsize),
-        T[],
-        T[],
-        T[],
-        Int[],
-        Vector{Vector{T}}(),
+        success_cr,
+        success_f,
+        success_df,
+        Vector{Int}(undef, popsize),
+        archive,
         popsize,
         popsize,
         4,
@@ -413,6 +436,14 @@ function _make_jso_state(T, popsize, memory_size, pmax, maxevals, maxiters)
     end
     pmax_t = T(pmax)
     pmin_t = pmax_t / 2
+    success_cr = T[]
+    sizehint!(success_cr, popsize)
+    success_f = T[]
+    sizehint!(success_f, popsize)
+    success_df = T[]
+    sizehint!(success_df, popsize)
+    archive = Vector{Vector{T}}()
+    sizehint!(archive, popsize)
     return JSOState(
         H,
         MCR,
@@ -423,11 +454,11 @@ function _make_jso_state(T, popsize, memory_size, pmax, maxevals, maxiters)
         pmin_t,
         Vector{T}(undef, popsize),
         Vector{T}(undef, popsize),
-        T[],
-        T[],
-        T[],
-        Int[],
-        Vector{Vector{T}}(),
+        success_cr,
+        success_f,
+        success_df,
+        Vector{Int}(undef, popsize),
+        archive,
         popsize,
         popsize,
         4,
@@ -746,6 +777,7 @@ function _run_evolution_serial!(
     maxevals,
     target_t,
     history,
+    objective_value_or_inf,
     trace_rows,
     job_id,
     message,
@@ -777,11 +809,10 @@ function _run_evolution_serial!(
                 break
             end
             _generate_trial!(strategy, trial, pop, fitness, i, rng, lower_t, upper_t, evaluations)
-            f_trial = _objective_value_or_inf(
+            f_trial = objective_value_or_inf(
                 f,
                 trial,
                 T,
-                message,
                 job_id,
                 :de_generation,
                 evaluations + 1,
@@ -882,6 +913,7 @@ function _run_evolution_parallel!(
     maxevals,
     target_t,
     history,
+    objective_value_or_inf,
     trace_rows,
     job_id,
     message,
@@ -931,11 +963,10 @@ function _run_evolution_parallel!(
             trial_i = view(trials, :, i)
             eval_count = evaluations + (i - 1)
             _generate_trial!(strategy, trial_i, parent_pop, parent_fitness, i, local_rng, lower_t, upper_t, eval_count)
-            f_trials[i] = _objective_value_or_inf(
+            f_trials[i] = objective_value_or_inf(
                 f,
                 trial_i,
                 T,
-                message,
                 job_id,
                 :de_generation,
                 eval_count + 1,
@@ -1042,6 +1073,7 @@ function _run_evolution!(
     target_t,
     history,
     parallel::Bool,
+    objective_value_or_inf,
     trace_rows,
     job_id,
     message,
@@ -1062,6 +1094,7 @@ function _run_evolution!(
             maxevals,
             target_t,
             history,
+            objective_value_or_inf,
             trace_rows,
             job_id,
             message,
@@ -1082,6 +1115,7 @@ function _run_evolution!(
         maxevals,
         target_t,
         history,
+        objective_value_or_inf,
         trace_rows,
         job_id,
         message,

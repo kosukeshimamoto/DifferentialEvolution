@@ -270,16 +270,16 @@ function optimize(
     pop = Matrix{T}(undef, dim, popsize)
     fitness = Vector{T}(undef, popsize)
     trial = Vector{T}(undef, dim)
+    objective_value_or_inf = message ? _objective_value_or_inf_verbose : _objective_value_or_inf_quiet
 
     for i in 1:popsize
         for j in 1:dim
             pop[j, i] = lower_t[j] + rand(rng, T) * (upper_t[j] - lower_t[j])
         end
-        fitness[i] = _objective_value_or_inf(
+        fitness[i] = objective_value_or_inf(
             f,
             view(pop, :, i),
             T,
-            message,
             job_id,
             :initialization,
             i,
@@ -299,6 +299,9 @@ function optimize(
 
     de_start_ns = time_ns()
     trace_rows = trace_history ? NamedTuple[] : nothing
+    if !isnothing(trace_rows)
+        sizehint!(trace_rows, maxiters + (local_refine ? 2 : 0))
+    end
     best_x, best_f, evaluations, iterations, history_best = _run_evolution!(
         f,
         pop,
@@ -313,6 +316,7 @@ function optimize(
         target_t,
         history,
         parallel,
+        objective_value_or_inf,
         trace_rows,
         job_id,
         message,
