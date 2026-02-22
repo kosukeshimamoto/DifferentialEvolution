@@ -429,12 +429,20 @@ end
 _start_generation!(::AbstractStrategy, pop, fitness, rng, iterations, maxiters, evaluations, maxevals) = nothing
 
 function _prepare_generation!(state, pop, fitness)
-    state.sorted_idx = sortperm(fitness)
+    popsize = size(pop, 2)
+    if length(state.sorted_idx) != popsize
+        resize!(state.sorted_idx, popsize)
+    end
+    sortperm!(state.sorted_idx, fitness)
     empty!(state.success_cr)
     empty!(state.success_f)
     empty!(state.success_df)
-    resize!(state.cr_vals, size(pop, 2))
-    resize!(state.f_vals, size(pop, 2))
+    if length(state.cr_vals) != popsize
+        resize!(state.cr_vals, popsize)
+    end
+    if length(state.f_vals) != popsize
+        resize!(state.f_vals, popsize)
+    end
     return nothing
 end
 
@@ -802,33 +810,35 @@ function _run_evolution_serial!(
                 ),
             )
         end
-        delta_best = if isfinite(previous_best_f) && isfinite(best_f)
-            max(previous_best_f - best_f, zero(T))
-        elseif isfinite(best_f) && !isfinite(previous_best_f)
-            T(Inf)
-        else
-            zero(T)
+        if message
+            delta_best = if isfinite(previous_best_f) && isfinite(best_f)
+                max(previous_best_f - best_f, zero(T))
+            elseif isfinite(best_f) && !isfinite(previous_best_f)
+                T(Inf)
+            else
+                zero(T)
+            end
+            if best_f < previous_best_f
+                stall_generations = 0
+            else
+                stall_generations += 1
+            end
+            _print_generation_message(
+                message,
+                message_every,
+                message_mode,
+                job_id,
+                iterations,
+                maxiters,
+                evaluations,
+                maxevals,
+                best_f,
+                best_x,
+                delta_best,
+                stall_generations,
+            )
+            previous_best_f = best_f
         end
-        if best_f < previous_best_f
-            stall_generations = 0
-        else
-            stall_generations += 1
-        end
-        _print_generation_message(
-            message,
-            message_every,
-            message_mode,
-            job_id,
-            iterations,
-            maxiters,
-            evaluations,
-            maxevals,
-            best_f,
-            best_x,
-            delta_best,
-            stall_generations,
-        )
-        previous_best_f = best_f
         if stop_due_to_evals || stop_due_to_target
             break
         end
@@ -952,33 +962,35 @@ function _run_evolution_parallel!(
                 ),
             )
         end
-        delta_best = if isfinite(previous_best_f) && isfinite(best_f)
-            max(previous_best_f - best_f, zero(T))
-        elseif isfinite(best_f) && !isfinite(previous_best_f)
-            T(Inf)
-        else
-            zero(T)
+        if message
+            delta_best = if isfinite(previous_best_f) && isfinite(best_f)
+                max(previous_best_f - best_f, zero(T))
+            elseif isfinite(best_f) && !isfinite(previous_best_f)
+                T(Inf)
+            else
+                zero(T)
+            end
+            if best_f < previous_best_f
+                stall_generations = 0
+            else
+                stall_generations += 1
+            end
+            _print_generation_message(
+                message,
+                message_every,
+                message_mode,
+                job_id,
+                iterations,
+                maxiters,
+                evaluations,
+                maxevals,
+                best_f,
+                best_x,
+                delta_best,
+                stall_generations,
+            )
+            previous_best_f = best_f
         end
-        if best_f < previous_best_f
-            stall_generations = 0
-        else
-            stall_generations += 1
-        end
-        _print_generation_message(
-            message,
-            message_every,
-            message_mode,
-            job_id,
-            iterations,
-            maxiters,
-            evaluations,
-            maxevals,
-            best_f,
-            best_x,
-            delta_best,
-            stall_generations,
-        )
-        previous_best_f = best_f
         if evaluations >= maxevals
             stop_due_to_evals = true
         end
