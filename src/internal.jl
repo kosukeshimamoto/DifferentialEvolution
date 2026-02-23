@@ -934,6 +934,12 @@ function _run_evolution_parallel!(
     stop_due_to_evals = false
     previous_best_f = best_f
     stall_generations = 0
+    parent_pop_buffer = Matrix{T}(undef, dim, popsize)
+    parent_fitness_buffer = Vector{T}(undef, popsize)
+    seeds = Vector{UInt64}(undef, popsize)
+    trials = Matrix{T}(undef, dim, popsize)
+    f_trials = Vector{T}(undef, popsize)
+    accept = Vector{Bool}(undef, popsize)
 
     while iterations < maxiters && evaluations < maxevals && best_f > target_t
         iterations += 1
@@ -947,16 +953,14 @@ function _run_evolution_parallel!(
             break
         end
 
-        parent_pop = copy(pop)
-        parent_fitness = copy(fitness)
+        parent_pop = view(parent_pop_buffer, :, 1:popsize)
+        parent_fitness = view(parent_fitness_buffer, 1:popsize)
+        copyto!(parent_pop, pop)
+        copyto!(parent_fitness, fitness)
 
-        seeds = Vector{UInt64}(undef, n_eval)
         @inbounds for i in 1:n_eval
             seeds[i] = rand(rng, UInt64)
         end
-
-        trials = Matrix{T}(undef, dim, n_eval)
-        f_trials = Vector{T}(undef, n_eval)
 
         Threads.@threads for i in 1:n_eval
             local_rng = Random.Xoshiro(seeds[i])
@@ -975,7 +979,6 @@ function _run_evolution_parallel!(
         end
         evaluations += n_eval
 
-        accept = Vector{Bool}(undef, n_eval)
         Threads.@threads for i in 1:n_eval
             if f_trials[i] <= parent_fitness[i]
                 accept[i] = true
