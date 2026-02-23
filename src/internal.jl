@@ -14,6 +14,7 @@ function _validate_inputs(
     memory_size,
     pmax,
     target,
+    parallel,
     local_method,
     local_maxiters,
     local_tol,
@@ -55,6 +56,9 @@ function _validate_inputs(
     if isnan(target)
         throw(ArgumentError("target must not be NaN"))
     end
+    if !(parallel isa Bool || parallel === :auto)
+        throw(ArgumentError("parallel must be false, true, or :auto"))
+    end
     if local_method ∉ _LOCAL_METHODS
         throw(ArgumentError("local_method must be one of :nelder_mead or :lbfgs"))
     end
@@ -79,6 +83,17 @@ function _validate_inputs(
         end
     end
     return nothing
+end
+
+function _resolve_parallel(parallel::Bool)
+    return parallel
+end
+
+function _resolve_parallel(parallel::Symbol)
+    if parallel === :auto
+        return Threads.nthreads() > 1
+    end
+    throw(ArgumentError("parallel must be false, true, or :auto"))
 end
 
 function _print_generation_message(

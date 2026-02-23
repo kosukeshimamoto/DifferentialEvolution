@@ -178,7 +178,8 @@ Keywords:
 - `pmax`: upper bound for p-best fraction in SHADE/L-SHADE/jSO (default `0.2`; jSO paper uses `0.25`)
 - `target`: stop when `best_f <= target` (default `-Inf`; `NaN` is invalid)
 - `history`: store best objective after each iteration (default `true`)
-- `parallel`: evaluate a generation in parallel using threads (default `false`)
+- `parallel`: `false` (default), `true`, or `:auto`; evaluate a generation in parallel using threads
+  (`:auto` is recommended when you want automatic switching without making it the default)
 - `local_refine`: run a local refinement step after DE finishes (default `false`)
 - `local_method`: local optimizer, `:nelder_mead` or `:lbfgs` (default `:nelder_mead`)
 - `local_maxiters`: max iterations for local refinement (default `200`)
@@ -202,6 +203,8 @@ Notes:
   generated from the same parent population and evaluated in parallel. Results
   can differ from the default asynchronous update but remain reproducible when
   `f` is deterministic.
+- `parallel=:auto` resolves to `parallel=true` when `Threads.nthreads() > 1`,
+  otherwise `parallel=false`.
 - If `f` returns non-finite values (`NaN`/`Inf`) or a non-convertible type,
   the value is treated as `Inf` so the run continues safely.
 - Local refinement starts from the DE best solution. If local optimization fails,
@@ -221,7 +224,7 @@ find_sublevel_point(f, lower, upper; c, c_tol=0.0, rng, algorithm, popsize, maxi
 - Stops early when a threshold hit is found.
 - Returns `SublevelSearchResult` with:
   `overlap`, `best_x`, `best_f`, `evaluations`, and `stop_reason`.
-- `parallel=true` is supported. In this mode, threshold checks are generation-synchronous:
+- `parallel=true` and `parallel=:auto` are supported. In this mode, threshold checks are generation-synchronous:
   a generation batch may finish before stopping after a hit. This can still reduce wall-clock time when `f` is expensive.
 
 Example:

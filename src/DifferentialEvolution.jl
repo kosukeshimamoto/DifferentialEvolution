@@ -182,6 +182,8 @@ Minimize `f` over a box defined by `lower` and `upper`.
 If `parallel=true`, trials are generated and evaluated in parallel across threads
 using a generation-synchronous update. Results can differ from the default
 asynchronous update, but remain reproducible for deterministic `f`.
+If `parallel=:auto`, the mode is chosen automatically (`true` when
+`Threads.nthreads() > 1`, otherwise `false`).
 
 If `local_refine=true`, a local optimization phase is started from the DE best
 solution. `local_method` selects `:nelder_mead` or `:lbfgs`. If local
@@ -208,7 +210,7 @@ function optimize(
     pmax::Real = 0.2,
     target::Real = -Inf,
     history::Bool = true,
-    parallel::Bool = false,
+    parallel::Union{Bool, Symbol} = false,
     local_refine::Bool = false,
     local_method::Symbol = :nelder_mead,
     local_maxiters::Int = 200,
@@ -248,6 +250,7 @@ function optimize(
         memory_size,
         pmax,
         target,
+        parallel,
         local_method,
         local_maxiters,
         local_tol,
@@ -266,6 +269,7 @@ function optimize(
     if isnothing(memory_size)
         memory_size = algorithm == :jso ? 5 : popsize
     end
+    resolved_parallel = _resolve_parallel(parallel)
 
     pop = Matrix{T}(undef, dim, popsize)
     fitness = Vector{T}(undef, popsize)
@@ -315,7 +319,7 @@ function optimize(
         maxevals,
         target_t,
         history,
-        parallel,
+        resolved_parallel,
         objective_value_or_inf,
         trace_rows,
         job_id,
@@ -484,7 +488,7 @@ function optimize(
         pmax_t,
         target_t,
         history,
-        parallel,
+        resolved_parallel,
         local_refine,
         local_method,
         local_maxiters,
@@ -542,7 +546,7 @@ function find_sublevel_point(
     memory_size::Union{Int, Nothing} = nothing,
     pmax::Real = 0.2,
     history::Bool = false,
-    parallel::Bool = false,
+    parallel::Union{Bool, Symbol} = false,
     trace_history::Bool = false,
     job_id::Int = 0,
     message::Bool = false,

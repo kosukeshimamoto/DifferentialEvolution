@@ -59,6 +59,7 @@ end
     @test_throws ArgumentError optimize(f, [0.0], [1.0]; rng=rng, local_tol=0.0)
     @test_throws ArgumentError optimize(f, [0.0], [1.0]; rng=rng, message_every=0)
     @test_throws ArgumentError optimize(f, [0.0], [1.0]; rng=rng, message_mode=:verbose)
+    @test_throws ArgumentError optimize(f, [0.0], [1.0]; rng=rng, parallel=:invalid)
     @test_throws ArgumentError find_sublevel_point(f, [0.0], [1.0]; c=Inf, rng=rng)
     @test_throws ArgumentError find_sublevel_point(f, [0.0], [1.0]; c=0.0, c_tol=Inf, rng=rng)
     @test_throws ArgumentError find_sublevel_point(f, [0.0], [1.0]; c=0.0, c_tol=-1e-3, rng=rng)
@@ -107,6 +108,26 @@ end
 
         @test res1.best_x == res2.best_x
         @test res1.best_f == res2.best_f
+    end
+end
+
+@testset "parallel auto mode" begin
+    f(x) = sum(abs2, x)
+    lower = fill(-2.0, 3)
+    upper = fill(2.0, 3)
+    auto_parallel = Threads.nthreads() > 1
+
+    for alg in (:de, :shade, :lshade, :jso)
+        rng1 = MersenneTwister(123)
+        rng2 = MersenneTwister(123)
+
+        res1 = optimize(f, lower, upper; rng=rng1, algorithm=alg, maxiters=40, popsize=12, parallel=:auto)
+        res2 = optimize(f, lower, upper; rng=rng2, algorithm=alg, maxiters=40, popsize=12, parallel=:auto)
+
+        @test res1.best_x == res2.best_x
+        @test res1.best_f == res2.best_f
+        @test res1.settings.parallel == auto_parallel
+        @test res2.settings.parallel == auto_parallel
     end
 end
 
