@@ -949,12 +949,9 @@ function _run_evolution_parallel!(
     stop_due_to_evals = false
     previous_best_f = best_f
     stall_generations = 0
-    parent_pop_buffer = Matrix{T}(undef, dim, popsize)
-    parent_fitness_buffer = Vector{T}(undef, popsize)
     seeds = Vector{UInt64}(undef, popsize)
     trials = Matrix{T}(undef, dim, popsize)
     f_trials = Vector{T}(undef, popsize)
-    accept = Vector{Bool}(undef, popsize)
 
     while iterations < maxiters && evaluations < maxevals && best_f > target_t
         iterations += 1
@@ -968,45 +965,51 @@ function _run_evolution_parallel!(
             break
         end
 
-        parent_pop = view(parent_pop_buffer, :, 1:popsize)
-        parent_fitness = view(parent_fitness_buffer, 1:popsize)
-        copyto!(parent_pop, pop)
-        copyto!(parent_fitness, fitness)
-
         @inbounds for i in 1:n_eval
             seeds[i] = rand(rng, UInt64)
         end
 
-        Threads.@threads for i in 1:n_eval
-            local_rng = Random.Xoshiro(seeds[i])
-            trial_i = view(trials, :, i)
-            eval_count = evaluations + (i - 1)
-            _generate_trial!(strategy, trial_i, parent_pop, parent_fitness, i, local_rng, lower_t, upper_t, eval_count)
-            f_trials[i] = objective_value_or_inf(
-                f,
-                trial_i,
-                T,
-                job_id,
-                :de_generation,
-                eval_count + 1,
-                i,
-            )
+        use_threaded_generation = n_eval >= 2 * Threads.nthreads()
+        if use_threaded_generation
+            Threads.@threads for i in 1:n_eval
+                local_rng = Random.Xoshiro(seeds[i])
+                trial_i = view(trials, :, i)
+                eval_count = evaluations + (i - 1)
+                _generate_trial!(strategy, trial_i, pop, fitness, i, local_rng, lower_t, upper_t, eval_count)
+                f_trials[i] = objective_value_or_inf(
+                    f,
+                    trial_i,
+                    T,
+                    job_id,
+                    :de_generation,
+                    eval_count + 1,
+                    i,
+                )
+            end
+        else
+            @inbounds for i in 1:n_eval
+                local_rng = Random.Xoshiro(seeds[i])
+                trial_i = view(trials, :, i)
+                eval_count = evaluations + (i - 1)
+                _generate_trial!(strategy, trial_i, pop, fitness, i, local_rng, lower_t, upper_t, eval_count)
+                f_trials[i] = objective_value_or_inf(
+                    f,
+                    trial_i,
+                    T,
+                    job_id,
+                    :de_generation,
+                    eval_count + 1,
+                    i,
+                )
+            end
         end
         evaluations += n_eval
 
-        Threads.@threads for i in 1:n_eval
-            if f_trials[i] <= parent_fitness[i]
-                accept[i] = true
+        for i in 1:n_eval
+            if f_trials[i] <= fitness[i]
+                _on_success!(strategy, i, view(trials, :, i), f_trials[i], fitness[i], pop, rng)
                 fitness[i] = f_trials[i]
                 copyto!(view(pop, :, i), view(trials, :, i))
-            else
-                accept[i] = false
-            end
-        end
-
-        for i in 1:n_eval
-            if accept[i]
-                _on_success!(strategy, i, view(trials, :, i), f_trials[i], parent_fitness[i], parent_pop, rng)
             end
         end
 
